@@ -29,42 +29,65 @@ async fn main() {
             let user_id = user.id.0 as i64;
             let username = user.username.clone().unwrap_or_else(|| "Anonymous".to_string());
 
-            ensure_user_exists(&pool, user_id, &username).await?;
+            // 1. Explicitly catch and log SQLx errors so they don't crash the Teloxide pipeline
+            if let Err(e) = ensure_user_exists(&pool, user_id, &username).await {
+                log::error!("Database error ensuring user exists: {:?}", e);
+                return respond(());
+            }
 
             if let Some(text) = msg.text() {
                 match text {
                     "/start" | "/balance" => {
-                        let tokens = get_balance(&pool, user_id).await?;
+                        let tokens = match get_balance(&pool, user_id).await {
+                            Ok(t) => t,
+                            Err(e) => {
+                                log::error!("Database error fetching balance: {:?}", e);
+                                return respond(());
+                            }
+                        };
                         bot.send_message(msg.chat.id, format!("Welcome to Capy Casino! 🎰\nYour current balance: {tokens} tokens."))
                             .await?;
                     }
                     "/spin" => {
-                        let mut tokens = get_balance(&pool, user_id).await?;
+                        let mut tokens = match get_balance(&pool, user_id).await {
+                            Ok(t) => t,
+                            Err(e) => {
+                                log::error!("Database error fetching balance for spin: {:?}", e);
+                                return respond(());
+                            }
+                        };
+                        
                         if tokens < 10 {
                             bot.send_message(msg.chat.id, "❌ You need at least 10 tokens to spin!").await?;
                             return respond(());
                         }
 
                         tokens -= 10;
-                        update_balance(&pool, user_id, tokens).await?;
+                        if let Err(e) = update_balance(&pool, user_id, tokens).await {
+                            log::error!("Database error deducting tokens: {:?}", e);
+                            return respond(());
+                        }
 
                         let dice_msg = bot.send_dice(msg.chat.id)
                             .emoji(DiceEmoji::SlotMachine)
                             .await?;
 
-                        if let Some(teloxide::types::Dice { value, .. }) = dice_msg.dice {
-                            // Telegram determines values 1 to 64 for 🎰
-                            // Jackpot conditions depend on specific outcomes (e.g., 1=Bar, 22=Grape, 43=Lemon, 64=777)
+                        // Fix: Changed dice_msg.dice to dice_msg.dice() method call
+                        if let Some(teloxide::types::Dice { value, .. }) = dice_msg.dice() {
                             let winnings = match value {
-                                64 => 500, // Jackpot (777)
-                                1 | 22 | 43 => 100, // Three of a kind 
+                                64 => 500, // Jackpot 777!
+                                1 | 22 | 43 => 100, // Three of a kind
                                 _ => 0,
                             };
 
                             tokens += winnings;
-                            update_balance(&pool, user_id, tokens).await?;
+                            
+                            if let Err(e) = update_balance(&pool, user_id, tokens).await {
+                                log::error!("Database error awarding winnings: {:?}", e);
+                                return respond(());
+                            }
 
-                            tokio::time::sleep(std::time::Duration::from_secs(2)).await; // Wait for spin animation
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
                             if winnings > 0 {
                                 bot.send_message(msg.chat.id, format!("🎉 JACKPOT! You won {winnings} tokens!\nNew balance: {tokens} tokens."))

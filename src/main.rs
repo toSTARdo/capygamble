@@ -4,7 +4,7 @@ use rand::seq::SliceRandom;
 use sqlx::{PgPool, Pool, Postgres, Row};
 use teloxide::{
     prelude::*,
-    types::{DiceEmoji, InlineKeyboardButton, InlineKeyboardMarkup, ParseMode, Update},
+    types::{DiceEmoji, InlineKeyboardButton, InlineKeyboardMarkup, MaybeInaccessibleMessage, ParseMode, Update},
 };
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -108,7 +108,7 @@ async fn handle_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<
                 .fetch_one(&pool).await.unwrap();
             let total_tokens: i64 = row.try_get("total_tokens").unwrap_or(0);
             let total_debt: i64 = row.try_get("total_debt").unwrap_or(0);
-            
+
             // Casino Net Worth = Total loans issued + losses collected - cash currently held by players
             let casino_networth = total_debt - total_tokens;
 
@@ -154,8 +154,12 @@ async fn handle_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<
             }
 
             sqlx::query("UPDATE players SET tokens = tokens - $1 WHERE user_id = $2").bind(bet).bind(user_id).execute(&pool).await.unwrap();
-            let won = (thread_rng().gen_bool(0.5) && choice == "heads") || (!thread_rng().gen_bool(0.5) && choice == "tails");
-            
+
+            // Fix: flip the coin once and compare against the single result,
+            // instead of calling gen_bool twice (which made heads/tails inconsistent).
+            let coin_is_heads = thread_rng().gen_bool(0.5);
+            let won = (coin_is_heads && choice == "heads") || (!coin_is_heads && choice == "tails");
+
             let winnings = if won { bet * 2 } else { 0 };
             sqlx::query("UPDATE players SET tokens = tokens + $1 WHERE user_id = $2").bind(winnings).bind(user_id).execute(&pool).await.unwrap();
             bot.send_message(msg.chat_id(), if won { format!("🎉 Won {winnings} tokens!") } else { format!("💸 Lost {bet} tokens.") }).await?;
@@ -176,7 +180,7 @@ async fn handle_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<
 
             if let Some(teloxide::types::Dice { value, .. }) = dice_msg.dice() {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                // Fix: Cast value (u8) to i32 to match guess (i32)
+                // Cast value (u8) to i32 to match guess (i32)
                 if (*value as i32) == guess {
                     let winnings = bet * 5;
                     sqlx::query("UPDATE players SET tokens = tokens + $1 WHERE user_id = $2").bind(winnings).bind(user_id).execute(&pool).await.unwrap();
@@ -242,13 +246,22 @@ async fn handle_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<
 // --- CALLBACK HANDLER (Button interactions) ---
 async fn handle_callback(bot: Bot, q: CallbackQuery, pool: PgPool) -> ResponseResult<()> {
     let user_id = q.from.id.0 as i64;
-    // Fix: Use .as_ref() to avoid moving q.data
+    // Use .as_deref() to avoid moving q.data
     let data = q.data.as_deref().unwrap_or_default();
-    
-    // Fix: Access the message without moving q
+
+    // Access the message without moving q
     let msg = match q.message.as_ref() {
         Some(m) => m,
         None => return Ok(()),
+    };
+
+    // In this teloxide version, callback messages come back as
+    // MaybeInaccessibleMessage (Telegram may only give a stub for old messages),
+    // so we pull chat_id/message_id out explicitly instead of calling
+    // .chat_id()/.id on it directly.
+    let (chat_id, message_id) = match msg {
+        MaybeInaccessibleMessage::Regular(m) => (m.chat.id, m.id),
+        MaybeInaccessibleMessage::Inaccessible(m) => (m.chat.id, m.message_id),
     };
 
     if data.starts_with("bj_") {
@@ -267,7 +280,7 @@ async fn handle_callback(bot: Bot, q: CallbackQuery, pool: PgPool) -> ResponseRe
             if score > 21 {
                 sqlx::query("DELETE FROM blackjack_games WHERE user_id = $1").bind(user_id).execute(&pool).await.unwrap();
                 let txt = format!("{}\n\n💥 **BUST! You went over 21. Lost {} tokens.**", format_bj_status(&p_hand, &d_hand, true), bet);
-                bot.edit_message_text(msg.chat_id(), msg.id, txt).await?;
+                bot.edit_message_text(chat_id, message_id, txt).await?;
             } else {
                 sqlx::query("UPDATE blackjack_games SET player_hand=$1, deck=$2 WHERE user_id=$3")
                     .bind(serde_json::to_string(&p_hand).unwrap()).bind(serde_json::to_string(&deck).unwrap()).bind(user_id).execute(&pool).await.unwrap();
@@ -275,7 +288,7 @@ async fn handle_callback(bot: Bot, q: CallbackQuery, pool: PgPool) -> ResponseRe
                     InlineKeyboardButton::callback("🟢 Hit", "bj_hit"),
                     InlineKeyboardButton::callback("🛑 Stand", "bj_stand"),
                 ]]);
-                bot.edit_message_text(msg.chat_id(), msg.id, format_bj_status(&p_hand, &d_hand, false)).reply_markup(keyboard).await?;
+                bot.edit_message_text(chat_id, message_id, format_bj_status(&p_hand, &d_hand, false)).reply_markup(keyboard).await?;
             }
         } else if data == "bj_stand" {
             while calc_bj_score(&d_hand) < 17 {
@@ -296,7 +309,7 @@ async fn handle_callback(bot: Bot, q: CallbackQuery, pool: PgPool) -> ResponseRe
             };
 
             let txt = format!("{}\n\n{}", format_bj_status(&p_hand, &d_hand, true), outcome);
-            bot.edit_message_text(msg.chat_id(), msg.id, txt).await?;
+            bot.edit_message_text(chat_id, message_id, txt).await?;
         }
     } else if data.starts_with("p_") {
         let game_row = match sqlx::query("SELECT * FROM poker_games WHERE user_id = $1").bind(user_id).fetch_optional(&pool).await.unwrap() {
@@ -312,7 +325,7 @@ async fn handle_callback(bot: Bot, q: CallbackQuery, pool: PgPool) -> ResponseRe
             let idx: usize = data.split('_').last().unwrap().parse().unwrap();
             holds[idx] = !holds[idx];
             sqlx::query("UPDATE poker_games SET holds = $1 WHERE user_id = $2").bind(serde_json::to_string(&holds).unwrap()).bind(user_id).execute(&pool).await.unwrap();
-            bot.edit_message_text(msg.chat_id(), msg.id, format_poker_status(&hand, &holds, false, 0)).reply_markup(make_poker_keyboard(&holds)).await?;
+            bot.edit_message_text(chat_id, message_id, format_poker_status(&hand, &holds, false, 0)).reply_markup(make_poker_keyboard(&holds)).await?;
         } else if data == "p_draw" {
             sqlx::query("DELETE FROM poker_games WHERE user_id = $1").bind(user_id).execute(&pool).await.unwrap();
             for i in 0..5 {
@@ -329,7 +342,7 @@ async fn handle_callback(bot: Bot, q: CallbackQuery, pool: PgPool) -> ResponseRe
             let mut txt = format_poker_status(&hand, &holds, true, winnings);
             if winnings > 0 { txt.push_str(&format!("\n\n🎉 **🏆 {}! Won {} tokens!**", rank, winnings)); }
             else { txt.push_str(&format!("\n\n💸 **{}! Lost {} tokens.**", rank, bet)); }
-            bot.edit_message_text(msg.chat_id(), msg.id, txt).await?;
+            bot.edit_message_text(chat_id, message_id, txt).await?;
         }
     }
     bot.answer_callback_query(q.id).await?;

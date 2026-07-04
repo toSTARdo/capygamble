@@ -9,4 +9,4 @@ tokio = { version = "1", features = ["full"] }
 log = "0.4"
 pretty_env_logger = "0.5"
 # Add sqlx for Neon DB connection
-sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "macros"] }
+sqlx = { version = "0.8.6", features = [ "postgres", "macros", "runtime-tokio-native-tls" ] }

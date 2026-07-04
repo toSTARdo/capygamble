@@ -1,7 +1,7 @@
 use std::env;
 
 use rand::seq::SliceRandom;
-use rand::{thread_rng, Rng};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use teloxide::prelude::*;
@@ -32,7 +32,7 @@ fn new_deck() -> Vec<Card> {
             deck.push(Card { suit, label, weight });
         }
     }
-    deck.shuffle(&mut thread_rng());
+    deck.shuffle(&mut rand::rng());
     deck
 }
 
@@ -66,7 +66,7 @@ async fn main() {
 // ---------- Message handler ----------
 
 async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> {
-    let Some(user) = msg.from() else { return Ok(()) };
+    let Some(user) = msg.from.as_ref() else { return Ok(()) };
     let user_id = user.id.0 as i64;
     let username = user.username.clone().unwrap_or_else(|| "Anonymous".into());
     let chat_id = msg.chat.id;
@@ -132,7 +132,7 @@ async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> 
         }
 
         "/spin" => {
-            let Some(bet) = valid_bet(&pool, user_id, rest.first()).await else {
+            let Some(bet) = valid_bet(&pool, user_id, rest.first().copied()).await else {
                 bot.send_message(chat_id, "❌ Invalid bet or insufficient funds!").await?;
                 return Ok(());
             };
@@ -170,7 +170,7 @@ async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> 
             };
             charge(&pool, user_id, bet).await;
 
-            let heads = thread_rng().gen_bool(0.5);
+            let heads = rand::rng().random_bool(0.5);
             let won = (heads && choice == "heads") || (!heads && choice == "tails");
             let winnings = if won { bet * 2 } else { 0 };
             pay(&pool, user_id, winnings).await;
@@ -210,7 +210,7 @@ async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> 
         }
 
         "/blackjack" => {
-            let Some(bet) = valid_bet(&pool, user_id, rest.first()).await else {
+            let Some(bet) = valid_bet(&pool, user_id, rest.first().copied()).await else {
                 bot.send_message(chat_id, "❌ Invalid bet or insufficient funds!").await?;
                 return Ok(());
             };
@@ -228,7 +228,7 @@ async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> 
         }
 
         "/poker" => {
-            let Some(bet) = valid_bet(&pool, user_id, rest.first()).await else {
+            let Some(bet) = valid_bet(&pool, user_id, rest.first().copied()).await else {
                 bot.send_message(chat_id, "❌ Invalid bet or insufficient funds!").await?;
                 return Ok(());
             };
@@ -300,9 +300,14 @@ async fn handle_blackjack(
     };
 
     let bet: i32 = row.get("bet");
-    let mut player: Vec<Card> = serde_json::from_str(row.get("player_hand")).unwrap_or_default();
-    let mut dealer: Vec<Card> = serde_json::from_str(row.get("dealer_hand")).unwrap_or_default();
-    let mut deck: Vec<Card> = serde_json::from_str(row.get("deck")).unwrap_or_default();
+    let player_json: String = row.get("player_hand");
+    let dealer_json: String = row.get("dealer_hand");
+    let deck_json: String = row.get("deck");
+    drop(row);
+
+    let mut player: Vec<Card> = serde_json::from_str(&player_json).unwrap_or_default();
+    let mut dealer: Vec<Card> = serde_json::from_str(&dealer_json).unwrap_or_default();
+    let mut deck: Vec<Card> = serde_json::from_str(&deck_json).unwrap_or_default();
 
     match action {
         "hit" => {
@@ -366,9 +371,14 @@ async fn handle_poker(
     };
 
     let bet: i32 = row.get("bet");
-    let mut hand: Vec<Card> = serde_json::from_str(row.get("hand")).unwrap_or_default();
-    let mut holds: Vec<bool> = serde_json::from_str(row.get("holds")).unwrap_or_default();
-    let mut deck: Vec<Card> = serde_json::from_str(row.get("deck")).unwrap_or_default();
+    let hand_json: String = row.get("hand");
+    let holds_json: String = row.get("holds");
+    let deck_json: String = row.get("deck");
+    drop(row);
+
+    let mut hand: Vec<Card> = serde_json::from_str(&hand_json).unwrap_or_default();
+    let mut holds: Vec<bool> = serde_json::from_str(&holds_json).unwrap_or_default();
+    let mut deck: Vec<Card> = serde_json::from_str(&deck_json).unwrap_or_default();
 
     if let Some(idx_str) = action.strip_prefix("hold_") {
         let Ok(idx) = idx_str.parse::<usize>() else { return Ok(()) };
@@ -619,7 +629,7 @@ async fn stats(pool: &PgPool, user_id: i64) -> Result<(i32, i32), sqlx::Error> {
 }
 
 /// Parses a bet argument and checks it's positive and affordable. Returns None if invalid.
-async fn valid_bet(pool: &PgPool, user_id: i64, arg: Option<&&str>) -> Option<i32> {
+async fn valid_bet(pool: &PgPool, user_id: i64, arg: Option<&str>) -> Option<i32> {
     let bet: i32 = arg?.parse().ok()?;
     let (tokens, _) = stats(pool, user_id).await.ok()?;
     if bet > 0 && bet <= tokens {

@@ -110,30 +110,30 @@ async fn main() {
 }
 
 async fn ensure_user_exists(pool: &Pool<Postgres>, user_id: i64, username: &str) -> Result<(), sqlx::Error> {
-    sqlx::query!(
-        "INSERT INTO players (user_id, username) VALUES ($1, $2) ON CONFLICT (user_id) DO NOTHING",
-        user_id,
-        username
-    )
-    .execute(pool)
-    .await?;
+    sqlx::query("INSERT INTO players (user_id, username) VALUES ($1, $2) ON CONFLICT (user_id) DO NOTHING")
+        .bind(user_id)
+        .bind(username)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
 async fn get_balance(pool: &Pool<Postgres>, user_id: i64) -> Result<i32, sqlx::Error> {
-    let row = sqlx::query!("SELECT tokens FROM players WHERE user_id = $1", user_id)
+    use sqlx::Row;
+    
+    let row = sqlx::query("SELECT tokens FROM players WHERE user_id = $1")
+        .bind(user_id)
         .fetch_one(pool)
         .await?;
-    Ok(row.tokens)
+        
+    Ok(row.get("tokens"))
 }
 
 async fn update_balance(pool: &Pool<Postgres>, user_id: i64, new_balance: i32) -> Result<(), sqlx::Error> {
-    sqlx::query!(
-        "UPDATE players SET tokens = $1 WHERE user_id = $2",
-        new_balance,
-        user_id
-    )
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE players SET tokens = $1 WHERE user_id = $2")
+        .bind(new_balance)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }

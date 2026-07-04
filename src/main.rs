@@ -8,7 +8,7 @@ async fn main() {
     log::info!("Starting CapyGamble Bot...");
 
     // 1. Connect to Neon DB
-    let database_url = env::var("postgresql://neondb_owner:npg_mBSfzipZ6J3u@ep-gentle-leaf-at860ut4-pooler.c-9.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require")
+    let database_url = env::var("DATABASE_URL")
         .expect("DATABASE_URL environment variable must be set");
     
     let pool = PgPool::connect(&database_url)

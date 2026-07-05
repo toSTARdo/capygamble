@@ -140,7 +140,13 @@ async fn init_db(pool: &PgPool) {
             log::warn!("Schema migration warning: {}", e);
         }
     }
+
     log::info!("Database schema initialized.");
+
+    sqlx::query("INSERT INTO players (user_id, username, tokens) VALUES (0, 'Casino', 1000000) ON CONFLICT (user_id) DO NOTHING;")
+        .execute(pool)
+        .await
+        .ok();
 }
 
 /// Minimal HTTP server for keep-alive pings. Binds to $PORT (defaults to 8080,
@@ -315,17 +321,18 @@ async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> 
         }
 
         "/faucet" => {
-            if tokens < 50 {
-                sqlx::query(
-                    "UPDATE players SET tokens = tokens + 500, debt = debt + 500 WHERE user_id = $1",
-                )
-                .bind(user_id)
-                .execute(&pool)
-                .await
-                .ok();
+            let casino_tokens: i32 = sqlx::query_scalar("SELECT tokens FROM players WHERE user_id = 0")
+                .fetch_one(&pool).await.unwrap_or(0);
+
+            if tokens < 50 && casino_tokens >= 500 {
+                sqlx::query("UPDATE players SET tokens = tokens + 500, debt = debt + 500 WHERE user_id = $1")
+                    .bind(user_id).execute(&pool).await.ok();
+                sqlx::query("UPDATE players SET tokens = tokens - 500 WHERE user_id = 0")
+                    .execute(&pool).await.ok();
+                    
                 bot.send_message(chat_id, t(&lang, "faucet_granted")).await?;
             } else {
-                bot.send_message(chat_id, t(&lang, "faucet_denied")).await?;
+                bot.send_message(chat_id, "⚠️ The casino is out of funds or you are too rich!").await?;
             }
         }
 
@@ -501,6 +508,26 @@ async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> 
             bot.send_message(chat_id, text).reply_markup(kb).parse_mode(ParseMode::Html).await?;
         }
 
+        "/payloan" => {
+            let amount = rest.first().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+            
+            if amount <= 0 || amount > tokens {
+                bot.send_message(chat_id, "⚠️ Invalid amount.").await?;
+                return Ok(());
+            }
+
+            sqlx::query("UPDATE players SET tokens = tokens - $1, debt = debt - $1 WHERE user_id = $2")
+                .bind(amount)
+                .bind(user_id)
+                .execute(&pool).await.ok();
+                
+            sqlx::query("UPDATE players SET tokens = tokens + $1 WHERE user_id = 0")
+                .bind(amount)
+                .execute(&pool).await.ok();
+
+            bot.send_message(chat_id, format!("✅ Repaid {} tokens to the bank.", amount)).await?;
+        }
+
         _ => {}
     }
 
@@ -514,7 +541,7 @@ async fn on_callback(bot: Bot, q: CallbackQuery, pool: PgPool) -> ResponseResult
     let data = q.data.clone().unwrap_or_default();
 
     let Some(msg_ref) = q.message.as_ref() else {
-        bot.answer_callback_query(&q.id).await?;
+        bot.answer_callback_query(q.id).await?;
         return Ok(());
     };
     let (chat_id, message_id) = chat_and_message_id(msg_ref);
@@ -528,13 +555,20 @@ async fn on_callback(bot: Bot, q: CallbackQuery, pool: PgPool) -> ResponseResult
     } else if let Some(action) = data.strip_prefix("p_") {
         handle_poker(&bot, &pool, &lang, user_id, chat_id, message_id, action, biggest_win).await?;
     } else if let Some(action) = data.strip_prefix("flip_") {
-        handle_flip(&bot, &pool, &lang, user_id, chat_id, message_id, action, biggest_win, &q.id).await?;
+        handle_flip(&bot, &pool, &lang, user_id, chat_id, message_id, action, biggest_win, q.id.clone()).await?;
     } else if let Some(action) = data.strip_prefix("dice_") {
-        handle_dice(&bot, &pool, &lang, user_id, chat_id, message_id, action, biggest_win, &q.id).await?;
+        handle_dice(&bot, &pool, &lang, user_id, chat_id, message_id, action, biggest_win, q.id.clone()).await?;
     }
 
-    let _ = bot.answer_callback_query(&q.id).await;
+    let _ = bot.answer_callback_query(q.id).await;
     Ok(())
+}
+
+fn chat_and_message_id(msg: &MaybeInaccessibleMessage) -> (ChatId, MessageId) {
+    match msg {
+        MaybeInaccessibleMessage::Regular(m) => (m.chat.id, m.id),
+        MaybeInaccessibleMessage::Inaccessible(m) => (m.chat.id, m.message_id),
+    }
 }
 
 async fn handle_blackjack(
@@ -709,7 +743,7 @@ async fn handle_flip(
     message_id: MessageId,
     action: &str,
     biggest_win: i32,
-    callback_id: &str,
+    callback_id: teloxide::types::CallbackQueryId,
 ) -> ResponseResult<()> {
     let parts: Vec<&str> = action.split('_').collect();
     if parts.len() != 3 { return Ok(()); }
@@ -766,7 +800,7 @@ async fn handle_dice(
     message_id: MessageId,
     action: &str,
     biggest_win: i32,
-    callback_id: &str,
+    callback_id: teloxide::types::CallbackQueryId,
 ) -> ResponseResult<()> {
     let parts: Vec<&str> = action.split('_').collect();
     if parts.len() != 3 { return Ok(()); }

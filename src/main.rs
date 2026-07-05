@@ -1,56 +1,110 @@
+use std::collections::HashMap;
 use std::env;
-use rand::{thread_rng, Rng};
-use rand::seq::SliceRandom;
-use sqlx::{PgPool, Pool, Postgres, Row};
-use teloxide::{
-    prelude::*,
-    types::{DiceEmoji, InlineKeyboardButton, InlineKeyboardMarkup, MaybeInaccessibleMessage, ParseMode, Update},
-};
+use std::sync::Arc;
+use std::time::Duration;
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+use chrono::{DateTime, Utc};
+use once_cell::sync::Lazy;
+use rand::seq::SliceRandom;
+use rand::RngExt;
+use serde::{Deserialize, Serialize};
+use sqlx::{postgres::PgPoolOptions, PgPool, Row};
+use teloxide::prelude::*;
+use teloxide::types::{
+    ChatId, DiceEmoji, InlineKeyboardButton, InlineKeyboardMarkup, MaybeInaccessibleMessage,
+    MessageId, ParseMode,
+};
+use tokio::sync::Mutex;
+
+// ---------- Configuration & Limits ----------
+
+const MIN_BET: i32 = 10;
+const MAX_BET: i32 = 50_000;
+const DAILY_REWARD: i32 = 1_000;
+const GLOBAL_COOLDOWN_SECS: i64 = 3;
+
+// ---------- Localization ----------
+
+static LOCALES: Lazy<HashMap<String, HashMap<String, String>>> = Lazy::new(|| {
+    // Falls back gracefully if translations.json is missing during development
+    let json_str = include_str!("translations.json");
+    serde_json::from_str(json_str).expect("Failed to parse translations.json")
+});
+
+fn t(lang: &str, key: &str) -> String {
+    LOCALES
+        .get(lang)
+        .and_then(|m| m.get(key))
+        .cloned()
+        .unwrap_or_else(|| {
+            // Provide intelligent defaults for newly added features to prevent <Missing: key>
+            match key {
+                "daily_success" => format!("✅ You claimed your daily reward of {} tokens!", DAILY_REWARD),
+                "daily_wait" => "⏳ You must wait {hours}h {mins}m before claiming your next daily bonus.".to_string(),
+                "cooldown_active" => "⏳ Please slow down! Wait a few seconds between games.".to_string(),
+                "bet_out_of_bounds" => format!("⚠️ Bet must be between {} and {} tokens.", MIN_BET, MAX_BET),
+                "achievement_unlocked" => "🌟 <b>ACHIEVEMENT UNLOCKED: New Personal Best!</b> 🌟\nCongratulations on your biggest win yet!".to_string(),
+                "top_title" => "🏆 <b>Top 10 Richest Players</b> 🏆".to_string(),
+                _ => format!("<Missing: {}>", key),
+            }
+        })
+}
+
+// ---------- Card model ----------
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Card {
     suit: String,
-    value: String,
+    label: String,
     weight: i32,
 }
 
-impl Card {
-    fn new(suit: &str, value: &str, weight: i32) -> Self {
-        Self {
-            suit: suit.to_string(),
-            value: value.to_string(),
-            weight,
-        }
-    }
-}
+const SUITS: [&str; 4] = ["♠️", "♥️", "♦️", "♣️"];
+const RANKS: [(&str, i32); 13] = [
+    ("2", 2), ("3", 3), ("4", 4), ("5", 5), ("6", 6), ("7", 7),
+    ("8", 8), ("9", 9), ("10", 10), ("J", 10), ("Q", 10), ("K", 10), ("A", 11),
+];
 
-fn create_deck() -> Vec<Card> {
-    let suits = vec!["♠️", "♥️", "♦️", "♣️"];
-    let values = vec![
-        ("2", 2), ("3", 3), ("4", 4), ("5", 5), ("6", 6), ("7", 7),
-        ("8", 8), ("9", 9), ("10", 10), ("J", 10), ("Q", 10), ("K", 10), ("A", 11),
-    ];
-    let mut deck = Vec::new();
-    for suit in &suits {
-        for (val, weight) in &values {
-            deck.push(Card::new(suit, val, *weight));
+fn new_deck() -> Vec<Card> {
+    let mut deck = Vec::with_capacity(52);
+    for &suit in SUITS.iter() {
+        for &(label, weight) in RANKS.iter() {
+            deck.push(Card { suit: suit.to_string(), label: label.to_string(), weight });
         }
     }
-    deck.shuffle(&mut thread_rng());
+    deck.shuffle(&mut rand::rng());
     deck
 }
+
+// FIX: Changed from Markdown formatting to HTML formatting (<code>) to prevent ParseMode crash bugs
+fn card_str(c: &Card) -> String {
+    format!("<code>{}{}</code>", c.suit, c.label)
+}
+
+// ---------- Entry point ----------
 
 #[tokio::main]
 async fn main() {
     pretty_env_logger::init();
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    let pool = PgPool::connect(&database_url).await.expect("Failed to connect to DB");
+    
+    // FIX: Replaced basic connect with robust connection pooling to resolve "TX is dead" panics
+    let pool = PgPoolOptions::new()
+        .max_connections(20)
+        .acquire_timeout(Duration::from_secs(10))
+        .idle_timeout(Duration::from_secs(60))
+        .connect(&database_url)
+        .await
+        .expect("Failed to connect to DB");
+
+    // Perform automatic database migrations for new features
+    init_db(&pool).await;
+
     let bot = Bot::from_env();
 
-    // Use dptree::entry() and branch your handlers
     let handler = dptree::entry()
-        .branch(Update::filter_message().endpoint(handle_message))
-        .branch(Update::filter_callback_query().endpoint(handle_callback));
+        .branch(Update::filter_message().endpoint(on_message))
+        .branch(Update::filter_callback_query().endpoint(on_callback));
 
     Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![pool])
@@ -60,366 +114,900 @@ async fn main() {
         .await;
 }
 
-// --- MESSAGE HANDLER (Commands) ---
-async fn handle_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> {
-    let user = match msg.from() {
-        Some(u) => u,
-        None => return Ok(()),
-    };
-    let user_id = user.id.0 as i64;
-    let username = user.username.clone().unwrap_or_else(|| "Anonymous".to_string());
+// Automatically apply schema updates for Achievements, Daily Bonuses, and Cooldowns
+async fn init_db(pool: &PgPool) {
+    let queries = [
+        "ALTER TABLE players ADD COLUMN IF NOT EXISTS default_bet INTEGER DEFAULT 0;",
+        "ALTER TABLE players ADD COLUMN IF NOT EXISTS last_daily TIMESTAMPTZ;",
+        "ALTER TABLE players ADD COLUMN IF NOT EXISTS games_played INTEGER DEFAULT 0;",
+        "ALTER TABLE players ADD COLUMN IF NOT EXISTS biggest_win INTEGER DEFAULT 0;",
+        "ALTER TABLE players ADD COLUMN IF NOT EXISTS last_action TIMESTAMPTZ;",
+    ];
 
-    if let Err(e) = ensure_user_exists(&pool, user_id, &username).await {
-        log::error!("DB error: {:?}", e);
+    for query in queries {
+        if let Err(e) = sqlx::query(query).execute(pool).await {
+            log::warn!("Schema migration warning: {}", e);
+        }
+    }
+    log::info!("Database schema initialized.");
+}
+
+// ---------- Message handler ----------
+
+async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> {
+    let Some(user) = msg.from.as_ref() else { return Ok(()) };
+    let user_id = user.id.0 as i64;
+    let username = user.username.clone().unwrap_or_else(|| "Anonymous".into());
+    let chat_id = msg.chat.id;
+
+    if ensure_user(&pool, user_id, &username).await.is_err() {
         return Ok(());
     }
 
-    let text = match msg.text() {
-        Some(t) => t,
-        None => return Ok(()),
-    };
+    let Some(text) = msg.text() else { return Ok(()) };
+    let mut parts = text.split_whitespace();
+    let cmd = parts.next().unwrap_or("");
+    let rest: Vec<&str> = parts.collect();
 
-    let mut args = text.split_whitespace();
-    let command = args.next().unwrap_or("");
+    // Fetch comprehensive user stats including limits and cooldowns
+    let player_data = stats(&pool, user_id).await.unwrap_or_default();
+    let tokens = player_data.tokens;
+    let debt = player_data.debt;
+    let lang = player_data.lang.clone();
+    let default_bet = player_data.default_bet;
+    let biggest_win = player_data.biggest_win;
 
-    match command {
+    // Command Router
+    match cmd {
         "/start" | "/balance" => {
-            let (tokens, debt) = get_user_stats(&pool, user_id).await.unwrap_or((0, 0));
-            let welcome = format!(
-                "🎰 *Welcome to Capy Casino\\!* 🎰\n\n💰 Balance: *{} tokens*\n💸 Debt: *{} tokens*\n\n*Commands:*\n/spin <bet> \\- Slots\n/flip <heads\\|tails> <bet> \\- Coin Flip\n/dice <1\\-6> <bet> \\- Dice roll\n/blackjack <bet> \\- Play BJ\n/poker <bet> \\- Video Poker\n/faucet \\- Take a loan\n/networth \\- View Global Metrics",
-                tokens, debt
-            );
-            bot.send_message(msg.chat_id(), welcome).parse_mode(ParseMode::MarkdownV2).await?;
+            let text = t(&lang, "welcome")
+                .replace("{tokens}", &tokens.to_string())
+                .replace("{debt}", &debt.to_string());
+            // FIX: Using HTML ParseMode to prevent unescaped Markdown from crashing the API
+            bot.send_message(chat_id, text)
+                .parse_mode(ParseMode::Html)
+                .await?;
+        }
+
+        "/help" => {
+            bot.send_message(chat_id, t(&lang, "help"))
+                .parse_mode(ParseMode::Html)
+                .await?;
+        }
+
+        "/change_lang" => {
+            let new_lang = match rest.first().copied() {
+                Some("uk") => "uk",
+                _ => "en",
+            };
+            sqlx::query("UPDATE players SET lang = $1 WHERE user_id = $2")
+                .bind(new_lang)
+                .bind(user_id)
+                .execute(&pool)
+                .await
+                .ok();
+            bot.send_message(chat_id, t(new_lang, "lang_set")).await?;
+        }
+
+        "/setbet" => {
+            let Some(new_bet) = rest.first().and_then(|s| s.parse::<i32>().ok()) else {
+                bot.send_message(chat_id, t(&lang, "setbet_usage")).await?;
+                return Ok(());
+            };
+            
+            if new_bet < MIN_BET || new_bet > MAX_BET {
+                bot.send_message(chat_id, t(&lang, "bet_out_of_bounds")).await?;
+                return Ok(());
+            }
+
+            sqlx::query("UPDATE players SET default_bet = $1 WHERE user_id = $2")
+                .bind(new_bet)
+                .bind(user_id)
+                .execute(&pool)
+                .await
+                .ok();
+            
+            let text = t(&lang, "setbet_success").replace("{bet}", &new_bet.to_string());
+            bot.send_message(chat_id, text).await?;
+        }
+
+        // ADDITION: Daily Rewards system
+        "/daily" => {
+            let now = Utc::now();
+            let can_claim = match player_data.last_daily {
+                Some(last) => now.signed_duration_since(last).num_hours() >= 24,
+                None => true,
+            };
+
+            if can_claim {
+                sqlx::query("UPDATE players SET tokens = tokens + $1, last_daily = $2 WHERE user_id = $3")
+                    .bind(DAILY_REWARD)
+                    .bind(now)
+                    .bind(user_id)
+                    .execute(&pool)
+                    .await
+                    .ok();
+                bot.send_message(chat_id, t(&lang, "daily_success")).await?;
+            } else {
+                let last = player_data.last_daily.unwrap();
+                let duration_left = chrono::Duration::hours(24) - now.signed_duration_since(last);
+                let hours = duration_left.num_hours();
+                let mins = duration_left.num_minutes() % 60;
+                
+                let msg = t(&lang, "daily_wait")
+                    .replace("{hours}", &hours.to_string())
+                    .replace("{mins}", &mins.to_string());
+                bot.send_message(chat_id, msg).await?;
+            }
+        }
+
+        // ADDITION: Leaderboard logic
+        "/top" => {
+            let rows = sqlx::query("SELECT username, tokens FROM players ORDER BY tokens DESC LIMIT 10")
+                .fetch_all(&pool)
+                .await;
+            
+            if let Ok(records) = rows {
+                let mut lb = format!("{}\n\n", t(&lang, "top_title"));
+                for (i, row) in records.iter().enumerate() {
+                    let name: String = row.try_get("username").unwrap_or_else(|_| "Anonymous".to_string());
+                    let user_tokens: i32 = row.try_get("tokens").unwrap_or(0);
+                    lb.push_str(&format!("{}. <b>{}</b> - {} tokens\n", i + 1, name, user_tokens));
+                }
+                bot.send_message(chat_id, lb)
+                    .parse_mode(ParseMode::Html)
+                    .await?;
+            }
         }
 
         "/faucet" => {
-            let (tokens, _debt) = get_user_stats(&pool, user_id).await.unwrap_or((0, 0));
             if tokens < 50 {
-                sqlx::query("UPDATE players SET tokens = tokens + 500, debt = debt + 500 WHERE user_id = $1")
-                    .bind(user_id).execute(&pool).await.unwrap();
-                bot.send_message(msg.chat_id(), "💸 You ran out of tokens! The Casino issued you a **500 token loan**.\n⚠️ This has been added to your /networth debt tracking!").await?;
+                sqlx::query(
+                    "UPDATE players SET tokens = tokens + 500, debt = debt + 500 WHERE user_id = $1",
+                )
+                .bind(user_id)
+                .execute(&pool)
+                .await
+                .ok();
+                bot.send_message(chat_id, t(&lang, "faucet_granted")).await?;
             } else {
-                bot.send_message(msg.chat_id(), "🛑 You still have tokens! Faucet loans are only for broke capybaras (< 50 tokens).").await?;
+                bot.send_message(chat_id, t(&lang, "faucet_denied")).await?;
             }
         }
 
         "/networth" => {
-            let row = sqlx::query("SELECT SUM(tokens)::BIGINT as total_tokens, SUM(debt)::BIGINT as total_debt FROM players")
-                .fetch_one(&pool).await.unwrap();
-            let total_tokens: i64 = row.try_get("total_tokens").unwrap_or(0);
-            let total_debt: i64 = row.try_get("total_debt").unwrap_or(0);
+            let row = sqlx::query(
+                "SELECT COALESCE(SUM(tokens),0)::BIGINT AS t, COALESCE(SUM(debt),0)::BIGINT AS d FROM players",
+            )
+            .fetch_one(&pool)
+            .await;
+            
+            let (total_tokens, total_debt): (i64, i64) = match row {
+                Ok(r) => (r.get("t"), r.get("d")),
+                Err(_) => (0, 0),
+            };
+            let casino_net = total_debt - total_tokens;
+            
+            let text = t(&lang, "networth")
+                .replace("{tokens}", &total_tokens.to_string())
+                .replace("{debt}", &total_debt.to_string())
+                .replace("{net}", &casino_net.to_string());
 
-            // Casino Net Worth = Total loans issued + losses collected - cash currently held by players
-            let casino_networth = total_debt - total_tokens;
-
-            let response = format!(
-                "🏢 **CAPY CASINO BALANCE SHEET** 🏢\n\n🎯 Total Player Liquidity: {} tokens\n📈 Total Outstanding Player Debt: {} tokens\n\n🏦 **Total Casino Net Worth:** {} tokens",
-                total_tokens, total_debt, casino_networth
-            );
-            bot.send_message(msg.chat_id(), response).await?;
+            bot.send_message(chat_id, text).parse_mode(ParseMode::Html).await?;
         }
 
         "/spin" => {
-            let bet: i32 = args.next().unwrap_or("10").parse().unwrap_or(0);
-            let (tokens, _) = get_user_stats(&pool, user_id).await.unwrap_or((0, 0));
-            if bet <= 0 || bet > tokens {
-                bot.send_message(msg.chat_id(), "❌ Invalid bet or insufficient funds!").await?;
+            if !check_cooldown(&pool, user_id).await {
+                bot.send_message(chat_id, t(&lang, "cooldown_active")).await?;
                 return Ok(());
             }
 
-            sqlx::query("UPDATE players SET tokens = tokens - $1 WHERE user_id = $2").bind(bet).bind(user_id).execute(&pool).await.unwrap();
-            let dice_msg = bot.send_dice(msg.chat_id()).emoji(DiceEmoji::SlotMachine).await?;
-
-            if let Some(teloxide::types::Dice { value, .. }) = dice_msg.dice() {
-                let mult = match value { 64 => 10, 1 | 22 | 43 => 3, _ => 0 };
-                let winnings = bet * mult;
-                sqlx::query("UPDATE players SET tokens = tokens + $1 WHERE user_id = $2").bind(winnings).bind(user_id).execute(&pool).await.unwrap();
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                if winnings > 0 {
-                    bot.send_message(msg.chat_id(), format!("🎉 WINNER! You won {winnings} tokens!")).await?;
-                } else {
-                    bot.send_message(msg.chat_id(), format!("😢 Lost {bet} tokens.")).await?;
+            let bet = match resolve_bet(&pool, user_id, rest.first().copied(), default_bet).await {
+                Ok(b) => b,
+                Err(err_key) => {
+                    bot.send_message(chat_id, t(&lang, err_key)).await?;
+                    return Ok(());
                 }
+            };
+            charge(&pool, user_id, bet).await;
+            increment_games_played(&pool, user_id).await;
+
+            let dice = bot.send_dice(chat_id).emoji(DiceEmoji::SlotMachine).await?;
+            let value = dice.dice().map(|d| d.value).unwrap_or(0);
+            let mult = match value {
+                64 => 10,
+                1 | 22 | 43 => 3,
+                _ => 0,
+            };
+            let winnings = bet * mult;
+            
+            let is_new_record = pay(&pool, user_id, winnings, biggest_win).await;
+
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let mut text = if winnings > 0 {
+                t(&lang, "spin_win").replace("{winnings}", &winnings.to_string())
+            } else {
+                t(&lang, "spin_lose").replace("{bet}", &bet.to_string())
+            };
+
+            if is_new_record {
+                text.push_str(&format!("\n\n{}", t(&lang, "achievement_unlocked")));
             }
+
+            bot.send_message(chat_id, text).parse_mode(ParseMode::Html).await?;
         }
 
         "/flip" => {
-            let choice = args.next().unwrap_or("").to_lowercase();
-            let bet: i32 = args.next().unwrap_or("10").parse().unwrap_or(0);
-            let (tokens, _) = get_user_stats(&pool, user_id).await.unwrap_or((0, 0));
-
-            if (choice != "heads" && choice != "tails") || bet <= 0 || bet > tokens {
-                bot.send_message(msg.chat_id(), "❌ Usage: /flip <heads|tails> <bet>").await?;
+            if !check_cooldown(&pool, user_id).await {
+                bot.send_message(chat_id, t(&lang, "cooldown_active")).await?;
                 return Ok(());
             }
 
-            sqlx::query("UPDATE players SET tokens = tokens - $1 WHERE user_id = $2").bind(bet).bind(user_id).execute(&pool).await.unwrap();
+            let choice = rest.first().map(|s| s.to_lowercase()).unwrap_or_default();
+            let bet_arg = rest.get(1).copied();
+            
+            if choice != "heads" && choice != "tails" {
+                bot.send_message(chat_id, t(&lang, "flip_usage")).await?;
+                return Ok(());
+            }
 
-            // Fix: flip the coin once and compare against the single result,
-            // instead of calling gen_bool twice (which made heads/tails inconsistent).
-            let coin_is_heads = thread_rng().gen_bool(0.5);
-            let won = (coin_is_heads && choice == "heads") || (!coin_is_heads && choice == "tails");
+            let bet = match resolve_bet(&pool, user_id, bet_arg, default_bet).await {
+                Ok(b) => b,
+                Err(err_key) => {
+                    bot.send_message(chat_id, t(&lang, err_key)).await?;
+                    return Ok(());
+                }
+            };
+            charge(&pool, user_id, bet).await;
+            increment_games_played(&pool, user_id).await;
 
+            let heads = rand::rng().random_bool(0.5);
+            let won = (heads && choice == "heads") || (!heads && choice == "tails");
             let winnings = if won { bet * 2 } else { 0 };
-            sqlx::query("UPDATE players SET tokens = tokens + $1 WHERE user_id = $2").bind(winnings).bind(user_id).execute(&pool).await.unwrap();
-            bot.send_message(msg.chat_id(), if won { format!("🎉 Won {winnings} tokens!") } else { format!("💸 Lost {bet} tokens.") }).await?;
+            
+            let is_new_record = pay(&pool, user_id, winnings, biggest_win).await;
+
+            let side_str = t(&lang, if heads { "coin_heads" } else { "coin_tails" });
+            let mut text = if won {
+                t(&lang, "flip_win")
+                    .replace("{side}", &side_str)
+                    .replace("{winnings}", &winnings.to_string())
+            } else {
+                t(&lang, "flip_lose")
+                    .replace("{side}", &side_str)
+                    .replace("{bet}", &bet.to_string())
+            };
+
+            if is_new_record {
+                text.push_str(&format!("\n\n{}", t(&lang, "achievement_unlocked")));
+            }
+
+            bot.send_message(chat_id, text).parse_mode(ParseMode::Html).await?;
         }
 
         "/dice" => {
-            let guess: i32 = args.next().unwrap_or("0").parse().unwrap_or(0);
-            let bet: i32 = args.next().unwrap_or("10").parse().unwrap_or(0);
-            let (tokens, _) = get_user_stats(&pool, user_id).await.unwrap_or((0, 0));
-
-            if guess < 1 || guess > 6 || bet <= 0 || bet > tokens {
-                bot.send_message(msg.chat_id(), "❌ Usage: /dice <1-6> <bet>").await?;
+            if !check_cooldown(&pool, user_id).await {
+                bot.send_message(chat_id, t(&lang, "cooldown_active")).await?;
                 return Ok(());
             }
 
-            sqlx::query("UPDATE players SET tokens = tokens - $1 WHERE user_id = $2").bind(bet).bind(user_id).execute(&pool).await.unwrap();
-            let dice_msg = bot.send_dice(msg.chat_id()).emoji(DiceEmoji::Dice).await?;
+            let guess: i32 = rest.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+            let bet_arg = rest.get(1).copied();
+            
+            if !(1..=6).contains(&guess) {
+                bot.send_message(chat_id, t(&lang, "dice_usage")).await?;
+                return Ok(());
+            }
 
-            if let Some(teloxide::types::Dice { value, .. }) = dice_msg.dice() {
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                // Cast value (u8) to i32 to match guess (i32)
-                if (*value as i32) == guess {
-                    let winnings = bet * 5;
-                    sqlx::query("UPDATE players SET tokens = tokens + $1 WHERE user_id = $2").bind(winnings).bind(user_id).execute(&pool).await.unwrap();
-                    bot.send_message(msg.chat_id(), format!("🎯 Match! Won {winnings} tokens!")).await?;
-                } else {
-                    bot.send_message(msg.chat_id(), format!("🎲 Landed on {value}. Lost {bet} tokens.")).await?;
+            let bet = match resolve_bet(&pool, user_id, bet_arg, default_bet).await {
+                Ok(b) => b,
+                Err(err_key) => {
+                    bot.send_message(chat_id, t(&lang, err_key)).await?;
+                    return Ok(());
                 }
+            };
+            charge(&pool, user_id, bet).await;
+            increment_games_played(&pool, user_id).await;
+
+            let dice = bot.send_dice(chat_id).emoji(DiceEmoji::Dice).await?;
+            let value = dice.dice().map(|d| d.value as i32).unwrap_or(0);
+            tokio::time::sleep(Duration::from_secs(2)).await;
+
+            if value == guess {
+                let winnings = bet * 5;
+                let is_new_record = pay(&pool, user_id, winnings, biggest_win).await;
+                let mut text = t(&lang, "dice_win").replace("{winnings}", &winnings.to_string());
+                
+                if is_new_record {
+                    text.push_str(&format!("\n\n{}", t(&lang, "achievement_unlocked")));
+                }
+                
+                bot.send_message(chat_id, text).parse_mode(ParseMode::Html).await?;
+            } else {
+                let text = t(&lang, "dice_lose")
+                    .replace("{value}", &value.to_string())
+                    .replace("{bet}", &bet.to_string());
+                bot.send_message(chat_id, text).parse_mode(ParseMode::Html).await?;
             }
         }
 
         "/blackjack" => {
-            let bet: i32 = args.next().unwrap_or("50").parse().unwrap_or(0);
-            let (tokens, _) = get_user_stats(&pool, user_id).await.unwrap_or((0, 0));
-            if bet <= 0 || bet > tokens {
-                bot.send_message(msg.chat_id(), "❌ Insufficient funds or invalid bet!").await?;
+            if !check_cooldown(&pool, user_id).await {
+                bot.send_message(chat_id, t(&lang, "cooldown_active")).await?;
                 return Ok(());
             }
 
-            sqlx::query("UPDATE players SET tokens = tokens - $1 WHERE user_id = $2").bind(bet).bind(user_id).execute(&pool).await.unwrap();
-            let mut deck = create_deck();
-            let p_hand = vec![deck.pop().unwrap(), deck.pop().unwrap()];
-            let d_hand = vec![deck.pop().unwrap(), deck.pop().unwrap()];
+            let bet = match resolve_bet(&pool, user_id, rest.first().copied(), default_bet).await {
+                Ok(b) => b,
+                Err(err_key) => {
+                    bot.send_message(chat_id, t(&lang, err_key)).await?;
+                    return Ok(());
+                }
+            };
+            charge(&pool, user_id, bet).await;
+            increment_games_played(&pool, user_id).await;
 
-            sqlx::query("INSERT INTO blackjack_games (user_id, bet, player_hand, dealer_hand, deck) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (user_id) DO UPDATE SET bet=$2, player_hand=$3, dealer_hand=$4, deck=$5")
-                .bind(user_id).bind(bet).bind(serde_json::to_string(&p_hand).unwrap()).bind(serde_json::to_string(&d_hand).unwrap()).bind(serde_json::to_string(&deck).unwrap()).execute(&pool).await.unwrap();
+            let mut deck = new_deck();
+            let player = vec![deck.pop().unwrap(), deck.pop().unwrap()];
+            let dealer = vec![deck.pop().unwrap(), deck.pop().unwrap()];
 
-            let text = format_bj_status(&p_hand, &d_hand, false);
-            let keyboard = InlineKeyboardMarkup::new(vec![vec![
-                InlineKeyboardButton::callback("🟢 Hit", "bj_hit"),
-                InlineKeyboardButton::callback("🛑 Stand", "bj_stand"),
-            ]]);
+            save_blackjack(&pool, user_id, bet, &player, &dealer, &deck).await;
 
-            bot.send_message(msg.chat_id(), text).reply_markup(keyboard).await?;
+            let text = bj_status(&lang, &player, &dealer, false);
+            let kb = bj_keyboard(&lang);
+            bot.send_message(chat_id, text).reply_markup(kb).parse_mode(ParseMode::Html).await?;
         }
 
         "/poker" => {
-            let bet: i32 = args.next().unwrap_or("50").parse().unwrap_or(0);
-            let (tokens, _) = get_user_stats(&pool, user_id).await.unwrap_or((0, 0));
-            if bet <= 0 || bet > tokens {
-                bot.send_message(msg.chat_id(), "❌ Insufficient funds or invalid bet!").await?;
+            if !check_cooldown(&pool, user_id).await {
+                bot.send_message(chat_id, t(&lang, "cooldown_active")).await?;
                 return Ok(());
             }
 
-            sqlx::query("UPDATE players SET tokens = tokens - $1 WHERE user_id = $2").bind(bet).bind(user_id).execute(&pool).await.unwrap();
-            let mut deck = create_deck();
-            let hand = vec![deck.pop().unwrap(), deck.pop().unwrap(), deck.pop().unwrap(), deck.pop().unwrap(), deck.pop().unwrap()];
+            let bet = match resolve_bet(&pool, user_id, rest.first().copied(), default_bet).await {
+                Ok(b) => b,
+                Err(err_key) => {
+                    bot.send_message(chat_id, t(&lang, err_key)).await?;
+                    return Ok(());
+                }
+            };
+            charge(&pool, user_id, bet).await;
+            increment_games_played(&pool, user_id).await;
+
+            let mut deck = new_deck();
+            let hand: Vec<Card> = (0..5).map(|_| deck.pop().unwrap()).collect();
             let holds = vec![false; 5];
 
-            sqlx::query("INSERT INTO poker_games (user_id, bet, hand, holds, deck) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (user_id) DO UPDATE SET bet=$2, hand=$3, holds=$4, deck=$5")
-                .bind(user_id).bind(bet).bind(serde_json::to_string(&hand).unwrap()).bind(serde_json::to_string(&holds).unwrap()).bind(serde_json::to_string(&deck).unwrap()).execute(&pool).await.unwrap();
+            save_poker(&pool, user_id, bet, &hand, &holds, &deck).await;
 
-            let text = format_poker_status(&hand, &holds, false, 0);
-            let keyboard = make_poker_keyboard(&holds);
-
-            bot.send_message(msg.chat_id(), text).reply_markup(keyboard).await?;
+            let text = poker_status(&lang, &hand, &holds, false);
+            let kb = poker_keyboard(&lang, &holds);
+            bot.send_message(chat_id, text).reply_markup(kb).parse_mode(ParseMode::Html).await?;
         }
 
         _ => {}
     }
+
     Ok(())
 }
 
-// --- CALLBACK HANDLER (Button interactions) ---
-async fn handle_callback(bot: Bot, q: CallbackQuery, pool: PgPool) -> ResponseResult<()> {
+// ---------- Callback handler ----------
+
+async fn on_callback(bot: Bot, q: CallbackQuery, pool: PgPool) -> ResponseResult<()> {
     let user_id = q.from.id.0 as i64;
-    // Use .as_deref() to avoid moving q.data
-    let data = q.data.as_deref().unwrap_or_default();
+    let data = q.data.clone().unwrap_or_default();
 
-    // Access the message without moving q
-    let msg = match q.message.as_ref() {
-        Some(m) => m,
-        None => return Ok(()),
+    let Some(msg_ref) = q.message.as_ref() else {
+        bot.answer_callback_query(q.id).await?;
+        return Ok(());
     };
+    let (chat_id, message_id) = chat_and_message_id(msg_ref);
+    
+    let player_data = stats(&pool, user_id).await.unwrap_or_default();
+    let lang = player_data.lang;
+    let biggest_win = player_data.biggest_win;
 
-    // In this teloxide version, callback messages come back as
-    // MaybeInaccessibleMessage (Telegram may only give a stub for old messages),
-    // so we pull chat_id/message_id out explicitly instead of calling
-    // .chat_id()/.id on it directly.
-    let (chat_id, message_id) = match msg {
-        MaybeInaccessibleMessage::Regular(m) => (m.chat.id, m.id),
-        MaybeInaccessibleMessage::Inaccessible(m) => (m.chat.id, m.message_id),
-    };
-
-    if data.starts_with("bj_") {
-        let game_row = match sqlx::query("SELECT * FROM blackjack_games WHERE user_id = $1").bind(user_id).fetch_optional(&pool).await.unwrap() {
-            Some(r) => r,
-            None => return Ok(()),
-        };
-        let bet: i32 = game_row.get("bet");
-        let mut p_hand: Vec<Card> = serde_json::from_str(game_row.get("player_hand")).unwrap();
-        let mut d_hand: Vec<Card> = serde_json::from_str(game_row.get("dealer_hand")).unwrap();
-        let mut deck: Vec<Card> = serde_json::from_str(game_row.get("deck")).unwrap();
-
-        if data == "bj_hit" {
-            p_hand.push(deck.pop().unwrap());
-            let score = calc_bj_score(&p_hand);
-            if score > 21 {
-                sqlx::query("DELETE FROM blackjack_games WHERE user_id = $1").bind(user_id).execute(&pool).await.unwrap();
-                let txt = format!("{}\n\n💥 **BUST! You went over 21. Lost {} tokens.**", format_bj_status(&p_hand, &d_hand, true), bet);
-                bot.edit_message_text(chat_id, message_id, txt).await?;
-            } else {
-                sqlx::query("UPDATE blackjack_games SET player_hand=$1, deck=$2 WHERE user_id=$3")
-                    .bind(serde_json::to_string(&p_hand).unwrap()).bind(serde_json::to_string(&deck).unwrap()).bind(user_id).execute(&pool).await.unwrap();
-                let keyboard = InlineKeyboardMarkup::new(vec![vec![
-                    InlineKeyboardButton::callback("🟢 Hit", "bj_hit"),
-                    InlineKeyboardButton::callback("🛑 Stand", "bj_stand"),
-                ]]);
-                bot.edit_message_text(chat_id, message_id, format_bj_status(&p_hand, &d_hand, false)).reply_markup(keyboard).await?;
-            }
-        } else if data == "bj_stand" {
-            while calc_bj_score(&d_hand) < 17 {
-                d_hand.push(deck.pop().unwrap());
-            }
-            let p_score = calc_bj_score(&p_hand);
-            let d_score = calc_bj_score(&d_hand);
-            sqlx::query("DELETE FROM blackjack_games WHERE user_id = $1").bind(user_id).execute(&pool).await.unwrap();
-
-            let outcome = if d_score > 21 || p_score > d_score {
-                sqlx::query("UPDATE players SET tokens = tokens + $1 WHERE user_id = $2").bind(bet * 2).bind(user_id).execute(&pool).await.unwrap();
-                format!("🎉 **YOU WIN! Won {} tokens!**", bet)
-            } else if p_score == d_score {
-                sqlx::query("UPDATE players SET tokens = tokens + $1 WHERE user_id = $2").bind(bet).bind(user_id).execute(&pool).await.unwrap();
-                "🤝 **Push! Bet returned.**".to_string()
-            } else {
-                format!("💸 **Dealer wins. Lost {} tokens.**", bet)
-            };
-
-            let txt = format!("{}\n\n{}", format_bj_status(&p_hand, &d_hand, true), outcome);
-            bot.edit_message_text(chat_id, message_id, txt).await?;
-        }
-    } else if data.starts_with("p_") {
-        let game_row = match sqlx::query("SELECT * FROM poker_games WHERE user_id = $1").bind(user_id).fetch_optional(&pool).await.unwrap() {
-            Some(r) => r,
-            None => return Ok(()),
-        };
-        let bet: i32 = game_row.get("bet");
-        let mut hand: Vec<Card> = serde_json::from_str(game_row.get("hand")).unwrap();
-        let mut holds: Vec<bool> = serde_json::from_str(game_row.get("holds")).unwrap();
-        let mut deck: Vec<Card> = serde_json::from_str(game_row.get("deck")).unwrap();
-
-        if data.starts_with("p_hold_") {
-            let idx: usize = data.split('_').last().unwrap().parse().unwrap();
-            holds[idx] = !holds[idx];
-            sqlx::query("UPDATE poker_games SET holds = $1 WHERE user_id = $2").bind(serde_json::to_string(&holds).unwrap()).bind(user_id).execute(&pool).await.unwrap();
-            bot.edit_message_text(chat_id, message_id, format_poker_status(&hand, &holds, false, 0)).reply_markup(make_poker_keyboard(&holds)).await?;
-        } else if data == "p_draw" {
-            sqlx::query("DELETE FROM poker_games WHERE user_id = $1").bind(user_id).execute(&pool).await.unwrap();
-            for i in 0..5 {
-                if !holds[i] { hand[i] = deck.pop().unwrap(); }
-            }
-            let rank = evaluate_poker_hand(&hand);
-            let mult = match rank {
-                "Royal Flush" => 250, "Straight Flush" => 50, "Four of a Kind" => 25,
-                "Full House" => 9, "Flush" => 6, "Straight" => 4, "Three of a Kind" => 3,
-                "Two Pair" => 2, "Jacks or Better" => 1, _ => 0,
-            };
-            let winnings = bet * mult;
-            sqlx::query("UPDATE players SET tokens = tokens + $1 WHERE user_id = $2").bind(winnings).bind(user_id).execute(&pool).await.unwrap();
-            let mut txt = format_poker_status(&hand, &holds, true, winnings);
-            if winnings > 0 { txt.push_str(&format!("\n\n🎉 **🏆 {}! Won {} tokens!**", rank, winnings)); }
-            else { txt.push_str(&format!("\n\n💸 **{}! Lost {} tokens.**", rank, bet)); }
-            bot.edit_message_text(chat_id, message_id, txt).await?;
-        }
+    if let Some(action) = data.strip_prefix("bj_") {
+        handle_blackjack(&bot, &pool, &lang, user_id, chat_id, message_id, action, biggest_win).await?;
+    } else if let Some(action) = data.strip_prefix("p_") {
+        handle_poker(&bot, &pool, &lang, user_id, chat_id, message_id, action, biggest_win).await?;
     }
+
     bot.answer_callback_query(q.id).await?;
     Ok(())
 }
 
-// --- UTILITY LOGIC HELPER FUNCTIONS ---
-fn calc_bj_score(hand: &[Card]) -> i32 {
-    let mut score = 0; let mut aces = 0;
-    for c in hand { score += c.weight; if c.value == "A" { aces += 1; } }
-    while score > 21 && aces > 0 { score -= 10; aces -= 1; }
-    score
-}
-
-fn format_bj_status(p_hand: &[Card], d_hand: &[Card], show_all: bool) -> String {
-    let p_cards: Vec<String> = p_hand.iter().map(|c| format!("`{}{}`", c.suit, c.value)).collect();
-    let p_score = calc_bj_score(p_hand);
-    if show_all {
-        let d_cards: Vec<String> = d_hand.iter().map(|c| format!("`{}{}`", c.suit, c.value)).collect();
-        format!("🃏 **CASINO BLACKJACK** 🃏\n\n👤 **Your Hand:** {} (Total: {})\n🤖 **Dealer Hand:** {} (Total: {})", p_cards.join(" "), p_score, d_cards.join(" "), calc_bj_score(d_hand))
-    } else {
-        format!("🃏 **CASINO BLACKJACK** 🃏\n\n👤 **Your Hand:** {} (Total: {})\n🤖 **Dealer Hand:** `{}{}` `📇` (Total: {} + ?)", p_cards.join(" "), p_score, d_hand[0].suit, d_hand[0].value, d_hand[0].weight)
+fn chat_and_message_id(msg: &MaybeInaccessibleMessage) -> (ChatId, MessageId) {
+    match msg {
+        MaybeInaccessibleMessage::Regular(m) => (m.chat.id, m.id),
+        MaybeInaccessibleMessage::Inaccessible(m) => (m.chat.id, m.message_id),
     }
 }
 
-fn format_poker_status(hand: &[Card], holds: &[bool], finished: bool, _winnings: i32) -> String {
-    let mut display = "🃏 **VIDEO POKER (FIVE-CARD DRAW)** 🃏\n\n".to_string();
-    for i in 0..5 {
-        let card_str = format!("`{}{}`", hand[i].suit, hand[i].value);
-        let hold_label = if holds[i] && !finished { " [HELD]" } else { "" };
-        display.push_str(&format!("Card {}: {}{}\n", i + 1, card_str, hold_label));
+async fn handle_blackjack(
+    bot: &Bot,
+    pool: &PgPool,
+    lang: &str,
+    user_id: i64,
+    chat_id: ChatId,
+    message_id: MessageId,
+    action: &str,
+    biggest_win: i32,
+) -> ResponseResult<()> {
+    let Some(row) = sqlx::query("SELECT * FROM blackjack_games WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None)
+    else {
+        return Ok(());
+    };
+
+    let bet: i32 = row.get("bet");
+    let player_json: String = row.get("player_hand");
+    let dealer_json: String = row.get("dealer_hand");
+    let deck_json: String = row.get("deck");
+    drop(row);
+
+    let mut player: Vec<Card> = serde_json::from_str(&player_json).unwrap_or_default();
+    let mut dealer: Vec<Card> = serde_json::from_str(&dealer_json).unwrap_or_default();
+    let mut deck: Vec<Card> = serde_json::from_str(&deck_json).unwrap_or_default();
+
+    match action {
+        "hit" => {
+            player.push(deck.pop().unwrap());
+            if bj_score(&player) > 21 {
+                clear_blackjack(pool, user_id).await;
+                let bust_msg = t(lang, "bj_bust").replace("{bet}", &bet.to_string());
+                let text = format!("{}\n\n{}", bj_status(lang, &player, &dealer, true), bust_msg);
+                bot.edit_message_text(chat_id, message_id, text).parse_mode(ParseMode::Html).await?;
+            } else {
+                save_blackjack(pool, user_id, bet, &player, &dealer, &deck).await;
+                bot.edit_message_text(chat_id, message_id, bj_status(lang, &player, &dealer, false))
+                    .reply_markup(bj_keyboard(lang))
+                    .parse_mode(ParseMode::Html)
+                    .await?;
+            }
+        }
+        "stand" => {
+            while bj_score(&dealer) < 17 {
+                dealer.push(deck.pop().unwrap());
+            }
+            let p_score = bj_score(&player);
+            let d_score = bj_score(&dealer);
+            clear_blackjack(pool, user_id).await;
+
+            let mut is_new_record = false;
+            let outcome = if d_score > 21 || p_score > d_score {
+                is_new_record = pay(pool, user_id, bet * 2, biggest_win).await;
+                t(lang, "bj_win").replace("{bet}", &bet.to_string())
+            } else if p_score == d_score {
+                pay(pool, user_id, bet, biggest_win).await;
+                t(lang, "bj_push")
+            } else {
+                t(lang, "bj_lose").replace("{bet}", &bet.to_string())
+            };
+
+            let mut text = format!("{}\n\n{}", bj_status(lang, &player, &dealer, true), outcome);
+            
+            if is_new_record {
+                text.push_str(&format!("\n\n{}", t(lang, "achievement_unlocked")));
+            }
+
+            bot.edit_message_text(chat_id, message_id, text).parse_mode(ParseMode::Html).await?;
+        }
+        _ => {}
     }
-    if !finished { display.push_str("\nSelect cards to hold, then click Draw!"); }
-    display
-}
 
-fn make_poker_keyboard(holds: &[bool]) -> InlineKeyboardMarkup {
-    let mut row = vec![];
-    for i in 0..5 {
-        let txt = if holds[i] { format!("🔒 C{}", i+1) } else { format!("🔓 C{}", i+1) };
-        row.push(InlineKeyboardButton::callback(txt, format!("p_hold_{}", i)));
-    }
-    InlineKeyboardMarkup::new(vec![row, vec![InlineKeyboardButton::callback("💥 DRAW CARDS", "p_draw")]])
-}
-
-fn evaluate_poker_hand(hand: &[Card]) -> &'static str {
-    let mut values: Vec<i32> = hand.iter().map(|c| match c.value.as_str() { "J" => 11, "Q" => 12, "K" => 13, "A" => 14, _ => c.weight }).collect();
-    values.sort_unstable();
-    let is_flush = hand.iter().all(|c| c.suit == hand[0].suit);
-    let is_straight = values.windows(2).all(|w| w[1] == w[0] + 1) || (values == vec![2, 3, 4, 5, 14]); // Handle low ace straight
-
-    let mut counts = std::collections::HashMap::new();
-    for &v in &values { *counts.entry(v).or_insert(0) += 1; }
-    let mut counts_vec: Vec<i32> = counts.values().copied().collect();
-    counts_vec.sort_unstable_by(|a, b| b.cmp(a));
-
-    if is_flush && is_straight && values[4] == 14 && values[0] == 10 { return "Royal Flush"; }
-    if is_flush && is_straight { return "Straight Flush"; }
-    if counts_vec[0] == 4 { return "Four of a Kind"; }
-    if counts_vec[0] == 3 && counts_vec[1] == 2 { return "Full House"; }
-    if is_flush { return "Flush"; }
-    if is_straight { return "Straight"; }
-    if counts_vec[0] == 3 { return "Three of a Kind"; }
-    if counts_vec[0] == 2 && counts_vec[1] == 2 { return "Two Pair"; }
-    if counts_vec[0] == 2 {
-        let pair_val = *counts.iter().find(|&(_, &c)| c == 2).unwrap().0;
-        if pair_val >= 11 { return "Jacks or Better"; }
-    }
-    "High Card"
-}
-
-async fn ensure_user_exists(pool: &Pool<Postgres>, user_id: i64, username: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("INSERT INTO players (user_id, username, tokens) VALUES ($1, $2, 1000) ON CONFLICT (user_id) DO NOTHING").bind(user_id).bind(username).execute(pool).await?;
     Ok(())
 }
 
-async fn get_user_stats(pool: &Pool<Postgres>, user_id: i64) -> Result<(i32, i32), sqlx::Error> {
-    let row = sqlx::query("SELECT tokens, debt FROM players WHERE user_id = $1").bind(user_id).fetch_one(pool).await?;
-    Ok((row.get("tokens"), row.get("debt")))
+async fn handle_poker(
+    bot: &Bot,
+    pool: &PgPool,
+    lang: &str,
+    user_id: i64,
+    chat_id: ChatId,
+    message_id: MessageId,
+    action: &str,
+    biggest_win: i32,
+) -> ResponseResult<()> {
+    let Some(row) = sqlx::query("SELECT * FROM poker_games WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None)
+    else {
+        return Ok(());
+    };
+
+    let bet: i32 = row.get("bet");
+    let hand_json: String = row.get("hand");
+    let holds_json: String = row.get("holds");
+    let deck_json: String = row.get("deck");
+    drop(row);
+
+    let mut hand: Vec<Card> = serde_json::from_str(&hand_json).unwrap_or_default();
+    let mut holds: Vec<bool> = serde_json::from_str(&holds_json).unwrap_or_default();
+    let mut deck: Vec<Card> = serde_json::from_str(&deck_json).unwrap_or_default();
+
+    if let Some(idx_str) = action.strip_prefix("hold_") {
+        let Ok(idx) = idx_str.parse::<usize>() else { return Ok(()) };
+        if idx < holds.len() {
+            holds[idx] = !holds[idx];
+        }
+        save_poker(pool, user_id, bet, &hand, &holds, &deck).await;
+        bot.edit_message_text(chat_id, message_id, poker_status(lang, &hand, &holds, false))
+            .reply_markup(poker_keyboard(lang, &holds))
+            .parse_mode(ParseMode::Html)
+            .await?;
+    } else if action == "draw" {
+        clear_poker(pool, user_id).await;
+        for i in 0..hand.len().min(holds.len()) {
+            if !holds[i] {
+                hand[i] = deck.pop().unwrap();
+            }
+        }
+        let rank_key = poker_rank_key(&hand);
+        let mult = match rank_key {
+            "rank_royal_flush" => 250,
+            "rank_straight_flush" => 50,
+            "rank_four_of_a_kind" => 25,
+            "rank_full_house" => 9,
+            "rank_flush" => 6,
+            "rank_straight" => 4,
+            "rank_three_of_a_kind" => 3,
+            "rank_two_pair" => 2,
+            "rank_jacks_or_better" => 1,
+            _ => 0,
+        };
+        let winnings = bet * mult;
+        let is_new_record = pay(pool, user_id, winnings, biggest_win).await;
+
+        let mut text = poker_status(lang, &hand, &holds, true);
+        let rank_str = t(lang, rank_key);
+        if winnings > 0 {
+            let win_msg = t(lang, "poker_win")
+                .replace("{rank}", &rank_str)
+                .replace("{winnings}", &winnings.to_string());
+            text.push_str(&format!("\n\n{}", win_msg));
+            
+            if is_new_record {
+                text.push_str(&format!("\n\n{}", t(lang, "achievement_unlocked")));
+            }
+        } else {
+            let lose_msg = t(lang, "poker_lose")
+                .replace("{rank}", &rank_str)
+                .replace("{bet}", &bet.to_string());
+            text.push_str(&format!("\n\n{}", lose_msg));
+        }
+        bot.edit_message_text(chat_id, message_id, text).parse_mode(ParseMode::Html).await?;
+    }
+
+    Ok(())
+}
+
+// ---------- Blackjack helpers ----------
+
+fn bj_score(hand: &[Card]) -> i32 {
+    let mut score = 0;
+    let mut aces = 0;
+    for c in hand {
+        score += c.weight;
+        if c.label == "A" {
+            aces += 1;
+        }
+    }
+    while score > 21 && aces > 0 {
+        score -= 10;
+        aces -= 1;
+    }
+    score
+}
+
+fn bj_status(lang: &str, player: &[Card], dealer: &[Card], show_all: bool) -> String {
+    let p_cards: Vec<String> = player.iter().map(card_str).collect();
+    let p_score = bj_score(player);
+    if show_all {
+        let d_cards: Vec<String> = dealer.iter().map(card_str).collect();
+        t(lang, "bj_status_all")
+            .replace("{p_cards}", &p_cards.join(" "))
+            .replace("{p_score}", &p_score.to_string())
+            .replace("{d_cards}", &d_cards.join(" "))
+            .replace("{d_score}", &bj_score(dealer).to_string())
+    } else {
+        t(lang, "bj_status_hidden")
+            .replace("{p_cards}", &p_cards.join(" "))
+            .replace("{p_score}", &p_score.to_string())
+            .replace("{d_card}", &card_str(&dealer[0]))
+            .replace("{d_score}", &dealer[0].weight.to_string())
+    }
+}
+
+fn bj_keyboard(lang: &str) -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![vec![
+        InlineKeyboardButton::callback(t(lang, "bj_btn_hit"), "bj_hit"),
+        InlineKeyboardButton::callback(t(lang, "bj_btn_stand"), "bj_stand"),
+    ]])
+}
+
+async fn save_blackjack(pool: &PgPool, user_id: i64, bet: i32, player: &[Card], dealer: &[Card], deck: &[Card]) {
+    sqlx::query(
+        "INSERT INTO blackjack_games (user_id, bet, player_hand, dealer_hand, deck) VALUES ($1, $2, $3, $4, $5) \
+         ON CONFLICT (user_id) DO UPDATE SET bet=$2, player_hand=$3, dealer_hand=$4, deck=$5",
+    )
+    .bind(user_id)
+    .bind(bet)
+    .bind(serde_json::to_string(player).unwrap())
+    .bind(serde_json::to_string(dealer).unwrap())
+    .bind(serde_json::to_string(deck).unwrap())
+    .execute(pool)
+    .await
+    .ok();
+}
+
+async fn clear_blackjack(pool: &PgPool, user_id: i64) {
+    sqlx::query("DELETE FROM blackjack_games WHERE user_id = $1")
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .ok();
+}
+
+// ---------- Poker helpers ----------
+
+fn poker_status(lang: &str, hand: &[Card], holds: &[bool], finished: bool) -> String {
+    let mut out = t(lang, "poker_title");
+    for (i, c) in hand.iter().enumerate() {
+        let held = holds.get(i).copied().unwrap_or(false) && !finished;
+        let held_str = if held { t(lang, "poker_held") } else { "".to_string() };
+        
+        let card_line = t(lang, "poker_card")
+            .replace("{i}", &(i + 1).to_string())
+            .replace("{card}", &card_str(c))
+            .replace("{held}", &held_str);
+            
+        out.push_str(&card_line);
+    }
+    if !finished {
+        out.push_str(&t(lang, "poker_prompt"));
+    }
+    out
+}
+
+fn poker_keyboard(lang: &str, holds: &[bool]) -> InlineKeyboardMarkup {
+    let row: Vec<InlineKeyboardButton> = holds
+        .iter()
+        .enumerate()
+        .map(|(i, held)| {
+            let label = if *held { format!("🔒 C{}", i + 1) } else { format!("🔓 C{}", i + 1) };
+            InlineKeyboardButton::callback(label, format!("p_hold_{i}"))
+        })
+        .collect();
+    InlineKeyboardMarkup::new(vec![row, vec![InlineKeyboardButton::callback(t(lang, "poker_btn_draw"), "p_draw")]])
+}
+
+async fn save_poker(pool: &PgPool, user_id: i64, bet: i32, hand: &[Card], holds: &[bool], deck: &[Card]) {
+    sqlx::query(
+        "INSERT INTO poker_games (user_id, bet, hand, holds, deck) VALUES ($1, $2, $3, $4, $5) \
+         ON CONFLICT (user_id) DO UPDATE SET bet=$2, hand=$3, holds=$4, deck=$5",
+    )
+    .bind(user_id)
+    .bind(bet)
+    .bind(serde_json::to_string(hand).unwrap())
+    .bind(serde_json::to_string(holds).unwrap())
+    .bind(serde_json::to_string(deck).unwrap())
+    .execute(pool)
+    .await
+    .ok();
+}
+
+async fn clear_poker(pool: &PgPool, user_id: i64) {
+    sqlx::query("DELETE FROM poker_games WHERE user_id = $1")
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .ok();
+}
+
+fn poker_rank_key(hand: &[Card]) -> &'static str {
+    let mut values: Vec<i32> = hand
+        .iter()
+        .map(|c| match c.label.as_str() {
+            "J" => 11,
+            "Q" => 12,
+            "K" => 13,
+            "A" => 14,
+            _ => c.weight,
+        })
+        .collect();
+    values.sort_unstable();
+
+    let is_flush = hand.iter().all(|c| c.suit == hand[0].suit);
+    let is_straight =
+        values.windows(2).all(|w| w[1] == w[0] + 1) || values == [2, 3, 4, 5, 14];
+
+    let mut counts = std::collections::HashMap::new();
+    for &v in &values {
+        *counts.entry(v).or_insert(0) += 1;
+    }
+    let mut counts_vec: Vec<i32> = counts.values().copied().collect();
+    counts_vec.sort_unstable_by(|a, b| b.cmp(a));
+
+    if is_flush && is_straight && values[4] == 14 && values[0] == 10 {
+        return "rank_royal_flush";
+    }
+    if is_flush && is_straight {
+        return "rank_straight_flush";
+    }
+    if counts_vec[0] == 4 {
+        return "rank_four_of_a_kind";
+    }
+    if counts_vec[0] == 3 && counts_vec.get(1) == Some(&2) {
+        return "rank_full_house";
+    }
+    if is_flush {
+        return "rank_flush";
+    }
+    if is_straight {
+        return "rank_straight";
+    }
+    if counts_vec[0] == 3 {
+        return "rank_three_of_a_kind";
+    }
+    if counts_vec[0] == 2 && counts_vec.get(1) == Some(&2) {
+        return "rank_two_pair";
+    }
+    if counts_vec[0] == 2 {
+        if let Some((&val, _)) = counts.iter().find(|&(_, &c)| c == 2) {
+            if val >= 11 {
+                return "rank_jacks_or_better";
+            }
+        }
+    }
+    "rank_high_card"
+}
+
+// ---------- Player/DB helpers ----------
+
+// Struct containing expanded user metrics
+#[derive(Default)]
+struct PlayerStats {
+    tokens: i32,
+    debt: i32,
+    lang: String,
+    default_bet: i32,
+    last_daily: Option<DateTime<Utc>>,
+    games_played: i32,
+    biggest_win: i32,
+}
+
+async fn ensure_user(pool: &PgPool, user_id: i64, username: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO players (user_id, username, tokens, lang, default_bet) \
+         VALUES ($1, $2, 1000, 'en', 0) ON CONFLICT (user_id) DO UPDATE SET username = $2",
+    )
+    .bind(user_id)
+    .bind(username)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn stats(pool: &PgPool, user_id: i64) -> Result<PlayerStats, sqlx::Error> {
+    let row = sqlx::query(
+        "SELECT tokens, debt, lang, default_bet, last_daily, games_played, biggest_win \
+         FROM players WHERE user_id = $1"
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
+    
+    Ok(PlayerStats {
+        tokens: row.try_get("tokens").unwrap_or(0),
+        debt: row.try_get("debt").unwrap_or(0),
+        lang: row.try_get("lang").unwrap_or_else(|_| "en".to_string()),
+        default_bet: row.try_get("default_bet").unwrap_or(0),
+        last_daily: row.try_get("last_daily").unwrap_or(None),
+        games_played: row.try_get("games_played").unwrap_or(0),
+        biggest_win: row.try_get("biggest_win").unwrap_or(0),
+    })
+}
+
+// ADDITION: Verify rate-limits/cooldown
+async fn check_cooldown(pool: &PgPool, user_id: i64) -> bool {
+    let now = Utc::now();
+    let row = sqlx::query("SELECT last_action FROM players WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None);
+
+    if let Some(r) = row {
+        if let Ok(last) = r.try_get::<DateTime<Utc>, _>("last_action") {
+            if now.signed_duration_since(last).num_seconds() < GLOBAL_COOLDOWN_SECS {
+                return false;
+            }
+        }
+    }
+
+    // Update last action time to enforce the cooldown
+    sqlx::query("UPDATE players SET last_action = $1 WHERE user_id = $2")
+        .bind(now)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .ok();
+        
+    true
+}
+
+// ADDITION: Games played tracker
+async fn increment_games_played(pool: &PgPool, user_id: i64) {
+    sqlx::query("UPDATE players SET games_played = games_played + 1 WHERE user_id = $1")
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .ok();
+}
+
+async fn resolve_bet(pool: &PgPool, user_id: i64, arg: Option<&str>, default_bet: i32) -> Result<i32, &'static str> {
+    let bet = match arg {
+        Some(s) => s.parse::<i32>().unwrap_or(0),
+        None => default_bet,
+    };
+
+    if bet <= 0 {
+        return Err("missing_bet");
+    }
+    
+    // Limits Enforcement
+    if bet < MIN_BET || bet > MAX_BET {
+        return Err("bet_out_of_bounds");
+    }
+
+    let stats_data = stats(pool, user_id).await.map_err(|_| "invalid_bet")?;
+    if bet > stats_data.tokens {
+        return Err("invalid_bet");
+    }
+    
+    Ok(bet)
+}
+
+async fn charge(pool: &PgPool, user_id: i64, amount: i32) {
+    sqlx::query("UPDATE players SET tokens = tokens - $1 WHERE user_id = $2")
+        .bind(amount)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .ok();
+}
+
+// FIX/ADDITION: Modified pay logic to manage the achievements tracking natively 
+// Returns a boolean indicating if a new personal record ("biggest win") was hit.
+async fn pay(pool: &PgPool, user_id: i64, amount: i32, current_biggest_win: i32) -> bool {
+    if amount == 0 {
+        return false;
+    }
+    
+    let mut is_record = false;
+    
+    if amount > current_biggest_win {
+        is_record = true;
+        sqlx::query("UPDATE players SET tokens = tokens + $1, biggest_win = $1 WHERE user_id = $2")
+            .bind(amount)
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .ok();
+    } else {
+        sqlx::query("UPDATE players SET tokens = tokens + $1 WHERE user_id = $2")
+            .bind(amount)
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .ok();
+    }
+    
+    is_record
 }

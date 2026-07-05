@@ -1,46 +1,46 @@
 {
   "en": {
-    "welcome": "🎰 *Welcome to Capy Casino\\!* 🎰\n\n💰 Balance: *{tokens} tokens*\n💸 Debt: *{debt} tokens*\n\n*Commands:*\n/setbet <amount> - Set default bet\n/spin [bet]\n/flip <heads\\|tails> [bet]\n/dice <1\\-6> [bet]\n/blackjack [bet]\n/poker [bet]\n/faucet\n/networth\n/help\n/change_lang <en|uk>",
-    "help": "ℹ️ *Help*\nThis is Capy Casino. Use commands to play games. You can set a default bet with `/setbet` so you don't have to type it every time. If you run out of tokens, use `/faucet`.",
+    "welcome": "🎰 <b>Welcome to Capy Casino!</b> 🎰\n\n💰 Balance: <b>{tokens} 🥮</b>\n💸 Debt: <b>{debt} 🥮</b>\n\n<b>Commands:</b>\n/setbet &lt;amount&gt; - Set default bet\n/spin [bet]\n/flip &lt;heads|tails&gt; [bet]\n/dice &lt;1-6&gt; [bet]\n/blackjack [bet]\n/poker [bet]\n/faucet\n/networth\n/help\n/change_lang &lt;en|uk&gt;",
+    "help": "ℹ️ <b>Help</b>\nThis is Capy Casino. Use commands to play games. You can set a default bet with <code>/setbet</code> so you don't have to type it every time. If you run out of 🥮, use <code>/faucet</code>.",
     "lang_set": "✅ Language changed to English.",
-    "setbet_success": "✅ Default bet set to {bet} tokens.",
+    "setbet_success": "✅ Default bet set to {bet} 🥮.",
     "setbet_usage": "❌ Usage: /setbet <amount>",
     "invalid_bet": "❌ Invalid bet or insufficient funds!",
     "missing_bet": "❌ You must set a bet first using /setbet <amount> or provide it in the command.",
-    "faucet_granted": "💸 Casino issued you a 500 token loan (added to debt).",
-    "faucet_denied": "🛑 Faucet is only for broke capybaras (< 50 tokens).",
+    "faucet_granted": "💸 Casino issued you a 500 🥮 loan (added to debt).",
+    "faucet_denied": "🛑 Faucet is only for broke capybaras (< 50 🥮).",
     "networth": "🏢 Casino Balance Sheet\n\nPlayer liquidity: {tokens}\nOutstanding debt: {debt}\nCasino net worth: {net}",
-    
-    "spin_win": "🎉 WINNER! You won {winnings} tokens!",
-    "spin_lose": "😢 Lost {bet} tokens.",
-    
+
+    "spin_win": "🎉 WINNER! You won {winnings} 🥮!",
+    "spin_lose": "😢 Lost {bet} 🥮.",
+
     "flip_usage": "❌ Usage: /flip <heads|tails> [bet]",
-    "flip_win": "🎉 It's {side}! Won {winnings} tokens!",
-    "flip_lose": "💸 It's {side}! Lost {bet} tokens.",
+    "flip_win": "🎉 It's {side}! Won {winnings} 🥮!",
+    "flip_lose": "💸 It's {side}! Lost {bet} 🥮.",
     "coin_heads": "heads",
     "coin_tails": "tails",
-    
+
     "dice_usage": "❌ Usage: /dice <1-6> [bet]",
-    "dice_win": "🎯 Match! Won {winnings} tokens!",
-    "dice_lose": "🎲 Landed on {value}. Lost {bet} tokens.",
-    
+    "dice_win": "🎯 Match! Won {winnings} 🥮!",
+    "dice_lose": "🎲 Landed on {value}. Lost {bet} 🥮.",
+
     "bj_status_all": "🃏 BLACKJACK 🃏\n\n👤 You: {p_cards} (Total: {p_score})\n🤖 Dealer: {d_cards} (Total: {d_score})",
     "bj_status_hidden": "🃏 BLACKJACK 🃏\n\n👤 You: {p_cards} (Total: {p_score})\n🤖 Dealer: {d_card} 📇 (Total: {d_score} + ?)",
     "bj_btn_hit": "🟢 Hit",
     "bj_btn_stand": "🛑 Stand",
-    "bj_bust": "💥 BUST! Lost {bet} tokens.",
-    "bj_win": "🎉 YOU WIN! Won {bet} tokens!",
+    "bj_bust": "💥 BUST! Lost {bet} 🥮.",
+    "bj_win": "🎉 YOU WIN! Won {bet} 🥮!",
     "bj_push": "🤝 Push! Bet returned.",
-    "bj_lose": "💸 Dealer wins. Lost {bet} tokens.",
-    
+    "bj_lose": "💸 Dealer wins. Lost {bet} 🥮.",
+
     "poker_title": "🃏 VIDEO POKER 🃏\n\n",
     "poker_card": "Card {i}: {card}{held}\n",
     "poker_held": " [HELD]",
     "poker_prompt": "\nSelect cards to hold, then Draw!",
     "poker_btn_draw": "💥 DRAW",
-    "poker_win": "🎉 {rank}! Won {winnings} tokens!",
-    "poker_lose": "💸 {rank}. Lost {bet} tokens.",
-    
+    "poker_win": "🎉 {rank}! Won {winnings} 🥮!",
+    "poker_lose": "💸 {rank}. Lost {bet} 🥮.",
+
     "rank_royal_flush": "Royal Flush",
     "rank_straight_flush": "Straight Flush",
     "rank_four_of_a_kind": "Four of a Kind",
@@ -53,47 +53,47 @@
     "rank_high_card": "High Card"
   },
   "uk": {
-    "welcome": "🎰 *Ласкаво просимо до Capy Casino\\!* 🎰\n\n💰 Баланс: *{tokens} токенів*\n💸 Борг: *{debt} токенів*\n\n*Команди:*\n/setbet <amount> - Встановити ставку\n/spin [bet]\n/flip <heads\\|tails> [bet]\n/dice <1\\-6> [bet]\n/blackjack [bet]\n/poker [bet]\n/faucet\n/networth\n/help\n/change_lang <en|uk>",
-    "help": "ℹ️ *Довідка*\nЦе Capy Casino. Використовуйте команди для гри. Ви можете встановити ставку за замовчуванням за допомогою `/setbet`. Якщо токени закінчилися, скористайтеся `/faucet`. Команди:\n/setbet <amount> - Встановити ставку\n/spin [bet]\n/flip <heads\\|tails> [bet]\n/dice <1\\-6> [bet]\n/blackjack [bet]\n/poker [bet]\n/faucet\n/networth\n/help\n/change_lang <en|uk>",
+    "welcome": "🎰 <b>Ласкаво просимо до Capy Casino!</b> 🎰\n\n💰 Баланс: <b>{tokens} 🥮</b>\n💸 Борг: <b>{debt} 🥮</b>\n\n<b>Команди:</b>\n/setbet &lt;amount&gt; - Встановити ставку\n/spin [bet]\n/flip &lt;heads|tails&gt; [bet]\n/dice &lt;1-6&gt; [bet]\n/blackjack [bet]\n/poker [bet]\n/faucet\n/networth\n/help\n/change_lang &lt;en|uk&gt;",
+    "help": "ℹ️ <b>Довідка</b>\nЦе Capy Casino. Використовуйте команди для гри. Ви можете встановити ставку за замовчуванням за допомогою <code>/setbet</code>. Якщо 🥮 закінчилися, скористайтеся <code>/faucet</code>. Команди:\n/setbet &lt;amount&gt; - Встановити ставку\n/spin [bet]\n/flip &lt;heads|tails&gt; [bet]\n/dice &lt;1-6&gt; [bet]\n/blackjack [bet]\n/poker [bet]\n/faucet\n/networth\n/help\n/change_lang &lt;en|uk&gt;",
     "lang_set": "✅ Мову змінено на українську.",
-    "setbet_success": "✅ Ставку за замовчуванням встановлено на {bet} токенів.",
+    "setbet_success": "✅ Ставку за замовчуванням встановлено на {bet} 🥮.",
     "setbet_usage": "❌ Використання: /setbet <сума>",
     "invalid_bet": "❌ Невірна ставка або недостатньо коштів!",
     "missing_bet": "❌ Спочатку встановіть ставку через /setbet <сума> або вкажіть її у команді.",
-    "faucet_granted": "💸 Казино видало вам позику 500 токенів (додано до боргу).",
-    "faucet_denied": "🛑 Кран тільки для капібар-банкрутів (< 50 токенів).",
+    "faucet_granted": "💸 Казино видало вам позику 500 🥮 (додано до боргу).",
+    "faucet_denied": "🛑 Кран тільки для капібар-банкрутів (< 50 🥮).",
     "networth": "🏢 Баланс Казино\n\nЛіквідність гравців: {tokens}\nНепогашений борг: {debt}\nЧиста вартість: {net}",
-    
-    "spin_win": "🎉 ПЕРЕМОГА! Ви виграли {winnings} токенів!",
-    "spin_lose": "😢 Програно {bet} токенів.",
-    
+
+    "spin_win": "🎉 ПЕРЕМОГА! Ви виграли {winnings} 🥮!",
+    "spin_lose": "😢 Програно {bet} 🥮.",
+
     "flip_usage": "❌ Використання: /flip <heads|tails> [ставка]",
-    "flip_win": "🎉 Випало {side}! Виграш {winnings} токенів!",
-    "flip_lose": "💸 Випало {side}! Програно {bet} токенів.",
+    "flip_win": "🎉 Випало {side}! Виграш {winnings} 🥮!",
+    "flip_lose": "💸 Випало {side}! Програно {bet} 🥮.",
     "coin_heads": "орел (heads)",
     "coin_tails": "решка (tails)",
-    
+
     "dice_usage": "❌ Використання: /dice <1-6> [ставка]",
-    "dice_win": "🎯 Збіг! Виграш {winnings} токенів!",
-    "dice_lose": "🎲 Випало {value}. Програно {bet} токенів.",
-    
+    "dice_win": "🎯 Збіг! Виграш {winnings} 🥮!",
+    "dice_lose": "🎲 Випало {value}. Програно {bet} 🥮.",
+
     "bj_status_all": "🃏 БЛЕКДЖЕК 🃏\n\n👤 Ви: {p_cards} (Разом: {p_score})\n🤖 Дилер: {d_cards} (Разом: {d_score})",
     "bj_status_hidden": "🃏 БЛЕКДЖЕК 🃏\n\n👤 Ви: {p_cards} (Разом: {p_score})\n🤖 Дилер: {d_card} 📇 (Разом: {d_score} + ?)",
     "bj_btn_hit": "🟢 Ще",
     "bj_btn_stand": "🛑 Досить",
-    "bj_bust": "💥 ПЕРЕБІР! Програно {bet} токенів.",
-    "bj_win": "🎉 ВИ ПЕРЕМОГЛИ! Виграш {bet} токенів!",
+    "bj_bust": "💥 ПЕРЕБІР! Програно {bet} 🥮.",
+    "bj_win": "🎉 ВИ ПЕРЕМОГЛИ! Виграш {bet} 🥮!",
     "bj_push": "🤝 Нічия! Ставку повернуто.",
-    "bj_lose": "💸 Дилер переміг. Програно {bet} токенів.",
-    
+    "bj_lose": "💸 Дилер переміг. Програно {bet} 🥮.",
+
     "poker_title": "🃏 ВІДЕО ПОКЕР 🃏\n\n",
     "poker_card": "Карта {i}: {card}{held}\n",
     "poker_held": " [ЗАТРИМАНО]",
     "poker_prompt": "\nОберіть карти для затримки та натисніть DRAW!",
     "poker_btn_draw": "💥 DRAW (Взяти карти)",
-    "poker_win": "🎉 {rank}! Виграш {winnings} токенів!",
-    "poker_lose": "💸 {rank}. Програно {bet} токенів.",
-    
+    "poker_win": "🎉 {rank}! Виграш {winnings} 🥮!",
+    "poker_lose": "💸 {rank}. Програно {bet} 🥮.",
+
     "rank_royal_flush": "Роял Флаш",
     "rank_straight_flush": "Стріт Флаш",
     "rank_four_of_a_kind": "Каре",

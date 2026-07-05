@@ -14,6 +14,8 @@ use teloxide::types::{
     ChatId, DiceEmoji, InlineKeyboardButton, InlineKeyboardMarkup, MaybeInaccessibleMessage,
     MessageId, ParseMode,
 };
+use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
 // ---------- Configuration & Limits ----------
@@ -100,6 +102,13 @@ async fn main() {
     // Perform automatic database migrations for new features
     init_db(&pool).await;
 
+    // Free hosting tiers (Render, Railway, Fly, etc.) spin the app down after a
+    // period of no incoming HTTP traffic. This tiny listener gives external
+    // uptime pingers (UptimeRobot, cron-job.org) something to hit every few
+    // minutes so the instance never goes idle. It's independent of the bot
+    // logic — just says "OK" to any request.
+    tokio::spawn(run_keepalive_server());
+
     let bot = Bot::from_env();
 
     let handler = dptree::entry()
@@ -130,6 +139,49 @@ async fn init_db(pool: &PgPool) {
         }
     }
     log::info!("Database schema initialized.");
+}
+
+/// Minimal HTTP server for keep-alive pings. Binds to $PORT (defaults to 8080,
+/// which most free hosting platforms expect) and replies 200 OK to any request,
+/// on any path. Point an external uptime pinger (UptimeRobot, cron-job.org,
+/// even a GitHub Actions cron hitting `curl your-app-url`) at this every
+/// 5-10 minutes to stop the platform from spinning the instance down.
+async fn run_keepalive_server() {
+    let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
+    let addr = format!("0.0.0.0:{port}");
+
+    let listener = match TcpListener::bind(&addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            log::warn!("Keep-alive server failed to bind {addr}: {e}");
+            return;
+        }
+    };
+    log::info!("Keep-alive server listening on {addr}");
+
+    loop {
+        let (mut socket, _) = match listener.accept().await {
+            Ok(pair) => pair,
+            Err(e) => {
+                log::warn!("Keep-alive accept error: {e}");
+                continue;
+            }
+        };
+
+        tokio::spawn(async move {
+            // Drain whatever the client sent (we don't care about the request)
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await;
+
+            let body = "OK";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+        });
+    }
 }
 
 // ---------- Message handler ----------
@@ -282,25 +334,9 @@ async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> 
             .fetch_one(&pool)
             .await;
             
-            let (total_tokens, total_debt): (i64, i64) = match row {
-                Ok(r) => (r.get("t"), r.get("d")),
-                Err(_) => (0, 0),
-            };
-            let casino_net = total_debt - total_tokens;
-            
-            let text = t(&lang, "networth")
-                .replace("{tokens}", &total_tokens.to_string())
-                .replace("{debt}", &total_debt.to_string())
-                .replace("{net}", &casino_net.to_string());
-
-            bot.send_message(chat_id, text).parse_mode(ParseMode::Html).await?;
-        }
-
-        "/spin" => {
-            if !check_cooldown(&pool, user_id).await {
-                bot.send_message(chat_id, t(&lang, "cooldown_active")).await?;
                 return Ok(());
-            }
+            };
+            charge(&pool, user_id, bet).await;
 
             let bet = match resolve_bet(&pool, user_id, rest.first().copied(), default_bet).await {
                 Ok(b) => b,
@@ -312,36 +348,13 @@ async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> 
             charge(&pool, user_id, bet).await;
             increment_games_played(&pool, user_id).await;
 
-            let dice = bot.send_dice(chat_id).emoji(DiceEmoji::SlotMachine).await?;
-            let value = dice.dice().map(|d| d.value).unwrap_or(0);
-            let mult = match value {
-                64 => 10,
-                1 | 22 | 43 => 3,
-                _ => 0,
-            };
-            let winnings = bet * mult;
-            
-            let is_new_record = pay(&pool, user_id, winnings, biggest_win).await;
-
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            let mut text = if winnings > 0 {
-                t(&lang, "spin_win").replace("{winnings}", &winnings.to_string())
-            } else {
-                t(&lang, "spin_lose").replace("{bet}", &bet.to_string())
-            };
-
-            if is_new_record {
-                text.push_str(&format!("\n\n{}", t(&lang, "achievement_unlocked")));
-            }
-
-            bot.send_message(chat_id, text).parse_mode(ParseMode::Html).await?;
-        }
-
-        "/flip" => {
-            if !check_cooldown(&pool, user_id).await {
-                bot.send_message(chat_id, t(&lang, "cooldown_active")).await?;
                 return Ok(());
             }
+            let Some(bet) = valid_bet(&pool, user_id, bet_arg).await else {
+                bot.send_message(chat_id, "❌ Invalid bet or insufficient funds!").await?;
+                return Ok(());
+            };
+            charge(&pool, user_id, bet).await;
 
             let choice = rest.first().map(|s| s.to_lowercase()).unwrap_or_default();
             let bet_arg = rest.get(1).copied();
@@ -390,6 +403,11 @@ async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> 
                 bot.send_message(chat_id, t(&lang, "cooldown_active")).await?;
                 return Ok(());
             }
+            let Some(bet) = valid_bet(&pool, user_id, bet_arg).await else {
+                bot.send_message(chat_id, "❌ Invalid bet or insufficient funds!").await?;
+                return Ok(());
+            };
+            charge(&pool, user_id, bet).await;
 
             let guess: i32 = rest.first().and_then(|s| s.parse().ok()).unwrap_or(0);
             let bet_arg = rest.get(1).copied();
@@ -435,7 +453,8 @@ async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> 
             if !check_cooldown(&pool, user_id).await {
                 bot.send_message(chat_id, t(&lang, "cooldown_active")).await?;
                 return Ok(());
-            }
+            };
+            charge(&pool, user_id, bet).await;
 
             let bet = match resolve_bet(&pool, user_id, rest.first().copied(), default_bet).await {
                 Ok(b) => b,
@@ -462,7 +481,8 @@ async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> 
             if !check_cooldown(&pool, user_id).await {
                 bot.send_message(chat_id, t(&lang, "cooldown_active")).await?;
                 return Ok(());
-            }
+            };
+            charge(&pool, user_id, bet).await;
 
             let bet = match resolve_bet(&pool, user_id, rest.first().copied(), default_bet).await {
                 Ok(b) => b,
@@ -474,15 +494,6 @@ async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> 
             charge(&pool, user_id, bet).await;
             increment_games_played(&pool, user_id).await;
 
-            let mut deck = new_deck();
-            let hand: Vec<Card> = (0..5).map(|_| deck.pop().unwrap()).collect();
-            let holds = vec![false; 5];
-
-            save_poker(&pool, user_id, bet, &hand, &holds, &deck).await;
-
-            let text = poker_status(&lang, &hand, &holds, false);
-            let kb = poker_keyboard(&lang, &holds);
-            bot.send_message(chat_id, text).reply_markup(kb).parse_mode(ParseMode::Html).await?;
         }
 
         _ => {}
@@ -517,6 +528,8 @@ async fn on_callback(bot: Bot, q: CallbackQuery, pool: PgPool) -> ResponseResult
     Ok(())
 }
 
+/// MaybeInaccessibleMessage wraps either a full Message or a stub —
+/// pull out chat_id/message_id from whichever variant we got.
 fn chat_and_message_id(msg: &MaybeInaccessibleMessage) -> (ChatId, MessageId) {
     match msg {
         MaybeInaccessibleMessage::Regular(m) => (m.chat.id, m.id),

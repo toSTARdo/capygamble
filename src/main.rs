@@ -37,21 +37,17 @@ fn t(lang: &str, key: &str) -> String {
     LOCALES
         .get(lang)
         .and_then(|m| m.get(key))
-        .cloned()
-        .unwrap_or_else(|| {
-            match key {
-                "daily_success" => format!("✅ You claimed your daily reward of {} tokens!", DAILY_REWARD),
-                "daily_wait" => "⏳ You must wait {hours}h {mins}m before claiming your next daily bonus.".to_string(),
-                "cooldown_active" => "⏳ Please slow down! Wait a few seconds between games.".to_string(),
-                "bet_out_of_bounds" => format!("⚠️ Bet must be between {} and {} tokens.", MIN_BET, MAX_BET),
-                "achievement_unlocked" => "🌟 <b>ACHIEVEMENT UNLOCKED: New Personal Best!</b> 🌟\nCongratulations on your biggest win yet!".to_string(),
-                "top_title" => "🏆 <b>Top 10 Richest Players</b> 🏆".to_string(),
-                "flip_prompt" => "🪙 Choose your side to bet {bet} tokens:".to_string(),
-                "dice_prompt" => "🎲 Choose a number to bet {bet} tokens:".to_string(),
-                "wrong_user" => "⚠️ This is not your game!".to_string(),
-                _ => format!("<Missing: {}>", key),
+        .map(|v| match v {
+            serde_json::Value::Array(arr) if !arr.is_empty() => {
+                arr.choose(&mut rand::rng())
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string()
             }
+            serde_json::Value::String(s) => s.clone(),
+            _ => format!("<Bad value: {}>", key),
         })
+        .unwrap_or_else(|| format!("<Missing: {}>", key))
 }
 
 // ---------- Card model ----------

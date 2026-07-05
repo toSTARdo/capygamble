@@ -11,35 +11,101 @@
     "faucet_denied": "🛑 Faucet is only for broke capybaras (< 50 🥮).",
     "networth": "🏢 Casino Balance Sheet\n\nPlayer liquidity: {tokens}\nOutstanding debt: {debt}\nCasino net worth: {net}",
 
-    "spin_win": "🎉 WINNER! You won {winnings} 🥮!",
-    "spin_lose": "😢 Lost {bet} 🥮.",
+    "spin_win": [
+      "🎉 WINNER! You won {winnings} 🥮!",
+      "🎰 JACKPOT VIBES! +{winnings} 🥮 lands in your pouch.",
+      "🐹 The capybara operator nods slowly. You won {winnings} 🥮.",
+      "✨ The reels aligned! {winnings} 🥮 richer.",
+      "🔥 Lucky spin! You just scored {winnings} 🥮."
+    ],
+    "spin_lose": [
+      "😢 Lost {bet} 🥮.",
+      "🎰 The reels laugh at you. -{bet} 🥮.",
+      "🐹 The capybara shrugs. Better luck next spin. Lost {bet} 🥮.",
+      "💨 Poof — {bet} 🥮 gone with the wind.",
+      "🪙 Not this time. Down {bet} 🥮."
+    ],
 
     "flip_usage": "❌ Usage: /flip <heads|tails> [bet]",
-    "flip_win": "🎉 It's {side}! Won {winnings} 🥮!",
-    "flip_lose": "💸 It's {side}! Lost {bet} 🥮.",
+    "flip_win": [
+      "🎉 It's {side}! Won {winnings} 🥮!",
+      "🪙 Called it! {side} lands you {winnings} 🥮.",
+      "😎 {side}, baby! +{winnings} 🥮.",
+      "🎯 The coin agrees with you. {winnings} 🥮 won on {side}.",
+      "🐹 A capybara flips coins better than you, but {side} still got you {winnings} 🥮!"
+    ],
+    "flip_lose": [
+      "💸 It's {side}! Lost {bet} 🥮.",
+      "🪙 {side}... and not your side. -{bet} 🥮.",
+      "😬 Coin says {side}. You say ouch. Lost {bet} 🥮.",
+      "📉 {side} betrayed you. Down {bet} 🥮.",
+      "🐹 The capybara caught the coin mid-air: {side}. Lost {bet} 🥮."
+    ],
     "coin_heads": "heads",
     "coin_tails": "tails",
 
     "dice_usage": "❌ Usage: /dice <1-6> [bet]",
-    "dice_win": "🎯 Match! Won {winnings} 🥮!",
-    "dice_lose": "🎲 Landed on {value}. Lost {bet} 🥮.",
+    "dice_win": [
+      "🎯 Match! Won {winnings} 🥮!",
+      "🎲 Dead on! +{winnings} 🥮.",
+      "🔥 Nailed the number! {winnings} 🥮 won.",
+      "😤 Called the exact roll. {winnings} 🥮 richer.",
+      "🐹 Even the capybara is impressed. {winnings} 🥮 won."
+    ],
+    "dice_lose": [
+      "🎲 Landed on {value}. Lost {bet} 🥮.",
+      "🎲 Rolled a {value} — not your guess. -{bet} 🥮.",
+      "😅 So close, yet so far. Landed {value}. Lost {bet} 🥮.",
+      "📉 The dice had other plans: {value}. Down {bet} 🥮.",
+      "🐹 The capybara rolled a {value}. Better luck next time. Lost {bet} 🥮."
+    ],
 
     "bj_status_all": "🃏 BLACKJACK 🃏\n\n👤 You: {p_cards} (Total: {p_score})\n🤖 Dealer: {d_cards} (Total: {d_score})",
     "bj_status_hidden": "🃏 BLACKJACK 🃏\n\n👤 You: {p_cards} (Total: {p_score})\n🤖 Dealer: {d_card} 📇 (Total: {d_score} + ?)",
     "bj_btn_hit": "🟢 Hit",
     "bj_btn_stand": "🛑 Stand",
-    "bj_bust": "💥 BUST! Lost {bet} 🥮.",
-    "bj_win": "🎉 YOU WIN! Won {bet} 🥮!",
+    "bj_bust": [
+      "💥 BUST! Lost {bet} 🥮.",
+      "💥 Too greedy! Busted and lost {bet} 🥮.",
+      "🃏 One card too many. -{bet} 🥮.",
+      "😬 Over 21 and out. Lost {bet} 🥮.",
+      "🐹 The capybara dealer winces. Bust! Lost {bet} 🥮."
+    ],
+    "bj_win": [
+      "🎉 YOU WIN! Won {bet} 🥮!",
+      "🃏 Beat the dealer! +{bet} 🥮.",
+      "😎 Table's yours. Won {bet} 🥮!",
+      "🔥 Clean win! {bet} 🥮 in your pocket.",
+      "🐹 The capybara dealer tips its hat. You won {bet} 🥮!"
+    ],
     "bj_push": "🤝 Push! Bet returned.",
-    "bj_lose": "💸 Dealer wins. Lost {bet} 🥮.",
+    "bj_lose": [
+      "💸 Dealer wins. Lost {bet} 🥮.",
+      "🃏 The house takes it. -{bet} 🥮.",
+      "😢 Dealer's hand held up. Lost {bet} 🥮.",
+      "📉 Not enough this round. Down {bet} 🥮.",
+      "🐹 The capybara dealer wins fair and square. Lost {bet} 🥮."
+    ],
 
     "poker_title": "🃏 VIDEO POKER 🃏\n\n",
     "poker_card": "Card {i}: {card}{held}\n",
     "poker_held": " [HELD]",
     "poker_prompt": "\nSelect cards to hold, then Draw!",
     "poker_btn_draw": "💥 DRAW",
-    "poker_win": "🎉 {rank}! Won {winnings} 🥮!",
-    "poker_lose": "💸 {rank}. Lost {bet} 🥮.",
+    "poker_win": [
+      "🎉 {rank}! Won {winnings} 🥮!",
+      "🃏 {rank}! That's +{winnings} 🥮.",
+      "🔥 {rank} on the draw! {winnings} 🥮 won.",
+      "😎 Nice hand — {rank}! {winnings} 🥮 richer.",
+      "🐹 The capybara dealer applauds your {rank}. {winnings} 🥮 won!"
+    ],
+    "poker_lose": [
+      "💸 {rank}. Lost {bet} 🥮.",
+      "🃏 Just {rank}. Not enough. -{bet} 🥮.",
+      "😬 {rank} won't cut it here. Lost {bet} 🥮.",
+      "📉 {rank}. Down {bet} 🥮.",
+      "🐹 The capybara dealer shakes its head at your {rank}. Lost {bet} 🥮."
+    ],
 
     "rank_royal_flush": "Royal Flush",
     "rank_straight_flush": "Straight Flush",
@@ -64,35 +130,101 @@
     "faucet_denied": "🛑 Кредит тільки для капібар-банкрутів (< 50 🥮).",
     "networth": "🏢 Баланс Казино\n\nЛіквідність гравців: {tokens}\nНепогашений борг: {debt}\nЧиста вартість: {net}",
 
-    "spin_win": "🎉 ПЕРЕМОГА! Ви виграли {winnings} 🥮!",
-    "spin_lose": "😢 Програно {bet} 🥮.",
+    "spin_win": [
+      "🎉 ПЕРЕМОГА! Ви виграли {winnings} 🥮!",
+      "🎰 Джекпот-вайби! +{winnings} 🥮 у вашій кишені.",
+      "🐹 Капібара-оператор повільно киває. Виграно {winnings} 🥮.",
+      "✨ Барабани зійшлися! Ви багатші на {winnings} 🥮.",
+      "🔥 Щасливий спін! Виграно {winnings} 🥮."
+    ],
+    "spin_lose": [
+      "😢 Програно {bet} 🥮.",
+      "🎰 Барабани сміються з вас. -{bet} 🥮.",
+      "🐹 Капібара знизує плечима. Наступного разу пощастить. Програно {bet} 🥮.",
+      "💨 Пуф — {bet} 🥮 зникли з вітром.",
+      "🪙 Не цього разу. Мінус {bet} 🥮."
+    ],
 
     "flip_usage": "❌ Використання: /flip <heads|tails> [ставка]",
-    "flip_win": "🎉 Випало {side}! Виграш {winnings} 🥮!",
-    "flip_lose": "💸 Випало {side}! Програно {bet} 🥮.",
+    "flip_win": [
+      "🎉 Випало {side}! Виграш {winnings} 🥮!",
+      "🪙 Вгадали! {side} приносить {winnings} 🥮.",
+      "😎 {side}, красунчику! +{winnings} 🥮.",
+      "🎯 Монета на вашому боці. {winnings} 🥮 виграно на {side}.",
+      "🐹 Капібара підкидає монети краще за вас, але {side} все одно приніс {winnings} 🥮!"
+    ],
+    "flip_lose": [
+      "💸 Випало {side}! Програно {bet} 🥮.",
+      "🪙 {side}... і не на вашу користь. -{bet} 🥮.",
+      "😬 Монета каже {side}. Ви кажете ой. Програно {bet} 🥮.",
+      "📉 {side} вас зрадив. Мінус {bet} 🥮.",
+      "🐹 Капібара впіймала монету на льоту: {side}. Програно {bet} 🥮."
+    ],
     "coin_heads": "орел (heads)",
     "coin_tails": "решка (tails)",
 
     "dice_usage": "❌ Використання: /dice <1-6> [ставка]",
-    "dice_win": "🎯 Збіг! Виграш {winnings} 🥮!",
-    "dice_lose": "🎲 Випало {value}. Програно {bet} 🥮.",
+    "dice_win": [
+      "🎯 Збіг! Виграш {winnings} 🥮!",
+      "🎲 Точно в ціль! +{winnings} 🥮.",
+      "🔥 Вгадали число! Виграно {winnings} 🥮.",
+      "😤 Точний прогноз кидка. {winnings} 🥮 багатше.",
+      "🐹 Навіть капібара вражена. Виграно {winnings} 🥮."
+    ],
+    "dice_lose": [
+      "🎲 Випало {value}. Програно {bet} 🥮.",
+      "🎲 Випало {value} — не ваш прогноз. -{bet} 🥮.",
+      "😅 Так близько, і водночас так далеко. Випало {value}. Програно {bet} 🥮.",
+      "📉 У кубика були інші плани: {value}. Мінус {bet} 🥮.",
+      "🐹 Капібара кинула {value}. Наступного разу пощастить. Програно {bet} 🥮."
+    ],
 
     "bj_status_all": "🃏 БЛЕКДЖЕК 🃏\n\n👤 Ви: {p_cards} (Разом: {p_score})\n🤖 Дилер: {d_cards} (Разом: {d_score})",
     "bj_status_hidden": "🃏 БЛЕКДЖЕК 🃏\n\n👤 Ви: {p_cards} (Разом: {p_score})\n🤖 Дилер: {d_card} 📇 (Разом: {d_score} + ?)",
     "bj_btn_hit": "🟢 Ще",
     "bj_btn_stand": "🛑 Досить",
-    "bj_bust": "💥 ПЕРЕБІР! Програно {bet} 🥮.",
-    "bj_win": "🎉 ВИ ПЕРЕМОГЛИ! Виграш {bet} 🥮!",
+    "bj_bust": [
+      "💥 ПЕРЕБІР! Програно {bet} 🥮.",
+      "💥 Занадто жадібно! Перебір і програш {bet} 🥮.",
+      "🃏 Одна карта зайва. -{bet} 🥮.",
+      "😬 Більше 21 і виліт. Програно {bet} 🥮.",
+      "🐹 Капібара-дилер морщиться. Перебір! Програно {bet} 🥮."
+    ],
+    "bj_win": [
+      "🎉 ВИ ПЕРЕМОГЛИ! Виграш {bet} 🥮!",
+      "🃏 Дилера обіграно! +{bet} 🥮.",
+      "😎 Стіл ваш. Виграно {bet} 🥮!",
+      "🔥 Чиста перемога! {bet} 🥮 у кишені.",
+      "🐹 Капібара-дилер знімає капелюха. Виграно {bet} 🥮!"
+    ],
     "bj_push": "🤝 Нічия! Ставку повернуто.",
-    "bj_lose": "💸 Дилер переміг. Програно {bet} 🥮.",
+    "bj_lose": [
+      "💸 Дилер переміг. Програно {bet} 🥮.",
+      "🃏 Заклад забирає дилер. -{bet} 🥮.",
+      "😢 Рука дилера виявилась сильнішою. Програно {bet} 🥮.",
+      "📉 Цього разу не вистачило. Мінус {bet} 🥮.",
+      "🐹 Капібара-дилер перемагає чесно. Програно {bet} 🥮."
+    ],
 
     "poker_title": "🃏 ВІДЕО ПОКЕР 🃏\n\n",
     "poker_card": "Карта {i}: {card}{held}\n",
     "poker_held": " [ЗАТРИМАНО]",
     "poker_prompt": "\nОберіть карти для затримки та натисніть DRAW!",
     "poker_btn_draw": "💥 DRAW (Взяти карти)",
-    "poker_win": "🎉 {rank}! Виграш {winnings} 🥮!",
-    "poker_lose": "💸 {rank}. Програно {bet} 🥮.",
+    "poker_win": [
+      "🎉 {rank}! Виграш {winnings} 🥮!",
+      "🃏 {rank}! Це +{winnings} 🥮.",
+      "🔥 {rank} на роздачі! Виграно {winnings} 🥮.",
+      "😎 Гарна рука — {rank}! Багатші на {winnings} 🥮.",
+      "🐹 Капібара-дилер аплодує вашій {rank}. Виграно {winnings} 🥮!"
+    ],
+    "poker_lose": [
+      "💸 {rank}. Програно {bet} 🥮.",
+      "🃏 Лише {rank}. Не досить. -{bet} 🥮.",
+      "😬 {rank} тут не врятує. Програно {bet} 🥮.",
+      "📉 {rank}. Мінус {bet} 🥮.",
+      "🐹 Капібара-дилер хитає головою на вашу {rank}. Програно {bet} 🥮."
+    ],
 
     "rank_royal_flush": "Роял Флаш",
     "rank_straight_flush": "Стріт Флаш",

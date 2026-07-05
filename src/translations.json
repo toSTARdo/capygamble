@@ -27,6 +27,8 @@
     ],
 
     "flip_usage": "❌ Usage: /flip <heads|tails> [bet]",
+    "flip_prompt": "🪙 Coin flip for {bet} 🥮 — choose your side!",
+    "wrong_user": "🚫 This isn't your bet, hands off!",
     "flip_win": [
       "🎉 It's {side}! Won {winnings} 🥮!",
       "🪙 Called it! {side} lands you {winnings} 🥮.",
@@ -45,6 +47,7 @@
     "coin_tails": "tails",
 
     "dice_usage": "❌ Usage: /dice <1-6> [bet]",
+    "dice_prompt": "🎲 Dice roll for {bet} 🥮 — pick your lucky number!",
     "dice_win": [
       "🎯 Match! Won {winnings} 🥮!",
       "🎲 Dead on! +{winnings} 🥮.",
@@ -146,6 +149,8 @@
     ],
 
     "flip_usage": "❌ Використання: /flip <heads|tails> [ставка]",
+    "flip_prompt": "🪙 Підкидання монети на {bet} 🥮 — оберіть сторону!",
+    "wrong_user": "🚫 Це не ваша ставка, руки геть!",
     "flip_win": [
       "🎉 Випало {side}! Виграш {winnings} 🥮!",
       "🪙 Вгадали! {side} приносить {winnings} 🥮.",
@@ -164,6 +169,7 @@
     "coin_tails": "решка (tails)",
 
     "dice_usage": "❌ Використання: /dice <1-6> [ставка]",
+    "dice_prompt": "🎲 Кидок кубика на {bet} 🥮 — оберіть щасливе число!",
     "dice_win": [
       "🎯 Збіг! Виграш {winnings} 🥮!",
       "🎲 Точно в ціль! +{winnings} 🥮.",

@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 use std::env;
-use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use once_cell::sync::Lazy;
-use rand::seq::SliceRandom;
+use rand::seq::{IndexedRandom, SliceRandom};
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use sqlx::{postgres::PgPoolOptions, PgPool, Row};
@@ -16,7 +15,6 @@ use teloxide::types::{
 };
 use tokio::net::TcpListener;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::Mutex;
 
 // ---------- Configuration & Limits ----------
 
@@ -27,27 +25,38 @@ const GLOBAL_COOLDOWN_SECS: i64 = 3;
 
 // ---------- Localization ----------
 
-static LOCALES: Lazy<HashMap<String, HashMap<String, String>>> = Lazy::new(|| {
+static LOCALES: Lazy<HashMap<String, HashMap<String, serde_json::Value>>> = Lazy::new(|| {
     // Falls back gracefully if translations.json is missing during development
     let json_str = include_str!("translations.json");
     serde_json::from_str(json_str).expect("Failed to parse translations.json")
 });
 
 fn t(lang: &str, key: &str) -> String {
-    LOCALES
-        .get(lang)
-        .and_then(|m| m.get(key))
-        .map(|v| match v {
-            serde_json::Value::Array(arr) if !arr.is_empty() => {
-                arr.choose(&mut rand::rng())
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string()
+    let value = LOCALES.get(lang).and_then(|m| m.get(key));
+
+    match value {
+        Some(serde_json::Value::Array(arr)) if !arr.is_empty() => arr
+            .choose(&mut rand::rng())
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        Some(serde_json::Value::String(s)) => s.clone(),
+        _ => {
+            // Provide intelligent defaults for newly added features to prevent <Missing: key>
+            match key {
+                "daily_success" => format!("✅ You claimed your daily reward of {} tokens!", DAILY_REWARD),
+                "daily_wait" => "⏳ You must wait {hours}h {mins}m before claiming your next daily bonus.".to_string(),
+                "cooldown_active" => "⏳ Please slow down! Wait a few seconds between games.".to_string(),
+                "bet_out_of_bounds" => format!("⚠️ Bet must be between {} and {} tokens.", MIN_BET, MAX_BET),
+                "achievement_unlocked" => "🌟 <b>ACHIEVEMENT UNLOCKED: New Personal Best!</b> 🌟\nCongratulations on your biggest win yet!".to_string(),
+                "top_title" => "🏆 <b>Top 10 Richest Players</b> 🏆".to_string(),
+                "wrong_user" => "🚫 This isn't your bet!".to_string(),
+                "flip_prompt" => "🪙 Coin flip for {bet} 🥮 — choose your side!".to_string(),
+                "dice_prompt" => "🎲 Dice roll for {bet} 🥮 — pick a number!".to_string(),
+                _ => format!("<Missing: {}>", key),
             }
-            serde_json::Value::String(s) => s.clone(),
-            _ => format!("<Bad value: {}>", key),
-        })
-        .unwrap_or_else(|| format!("<Missing: {}>", key))
+        }
+    }
 }
 
 // ---------- Card model ----------

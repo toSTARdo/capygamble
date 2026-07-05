@@ -333,10 +333,26 @@ async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> 
             )
             .fetch_one(&pool)
             .await;
-            
-                return Ok(());
+
+            let (total_tokens, total_debt): (i64, i64) = match row {
+                Ok(r) => (r.get("t"), r.get("d")),
+                Err(_) => (0, 0),
             };
-            charge(&pool, user_id, bet).await;
+            let casino_net = total_debt - total_tokens;
+
+            let text = t(&lang, "networth")
+                .replace("{tokens}", &total_tokens.to_string())
+                .replace("{debt}", &total_debt.to_string())
+                .replace("{net}", &casino_net.to_string());
+
+            bot.send_message(chat_id, text).parse_mode(ParseMode::Html).await?;
+        }
+
+        "/spin" => {
+            if !check_cooldown(&pool, user_id).await {
+                bot.send_message(chat_id, t(&lang, "cooldown_active")).await?;
+                return Ok(());
+            }
 
             let bet = match resolve_bet(&pool, user_id, rest.first().copied(), default_bet).await {
                 Ok(b) => b,
@@ -348,17 +364,40 @@ async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> 
             charge(&pool, user_id, bet).await;
             increment_games_played(&pool, user_id).await;
 
+            let dice = bot.send_dice(chat_id).emoji(DiceEmoji::SlotMachine).await?;
+            let value = dice.dice().map(|d| d.value).unwrap_or(0);
+            let mult = match value {
+                64 => 10,
+                1 | 22 | 43 => 3,
+                _ => 0,
+            };
+            let winnings = bet * mult;
+
+            let is_new_record = pay(&pool, user_id, winnings, biggest_win).await;
+
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let mut text = if winnings > 0 {
+                t(&lang, "spin_win").replace("{winnings}", &winnings.to_string())
+            } else {
+                t(&lang, "spin_lose").replace("{bet}", &bet.to_string())
+            };
+
+            if is_new_record {
+                text.push_str(&format!("\n\n{}", t(&lang, "achievement_unlocked")));
+            }
+
+            bot.send_message(chat_id, text).parse_mode(ParseMode::Html).await?;
+        }
+
+        "/flip" => {
+            if !check_cooldown(&pool, user_id).await {
+                bot.send_message(chat_id, t(&lang, "cooldown_active")).await?;
                 return Ok(());
             }
-            let Some(bet) = valid_bet(&pool, user_id, bet_arg).await else {
-                bot.send_message(chat_id, "❌ Invalid bet or insufficient funds!").await?;
-                return Ok(());
-            };
-            charge(&pool, user_id, bet).await;
 
             let choice = rest.first().map(|s| s.to_lowercase()).unwrap_or_default();
             let bet_arg = rest.get(1).copied();
-            
+
             if choice != "heads" && choice != "tails" {
                 bot.send_message(chat_id, t(&lang, "flip_usage")).await?;
                 return Ok(());
@@ -377,7 +416,7 @@ async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> 
             let heads = rand::rng().random_bool(0.5);
             let won = (heads && choice == "heads") || (!heads && choice == "tails");
             let winnings = if won { bet * 2 } else { 0 };
-            
+
             let is_new_record = pay(&pool, user_id, winnings, biggest_win).await;
 
             let side_str = t(&lang, if heads { "coin_heads" } else { "coin_tails" });
@@ -403,15 +442,10 @@ async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> 
                 bot.send_message(chat_id, t(&lang, "cooldown_active")).await?;
                 return Ok(());
             }
-            let Some(bet) = valid_bet(&pool, user_id, bet_arg).await else {
-                bot.send_message(chat_id, "❌ Invalid bet or insufficient funds!").await?;
-                return Ok(());
-            };
-            charge(&pool, user_id, bet).await;
 
             let guess: i32 = rest.first().and_then(|s| s.parse().ok()).unwrap_or(0);
             let bet_arg = rest.get(1).copied();
-            
+
             if !(1..=6).contains(&guess) {
                 bot.send_message(chat_id, t(&lang, "dice_usage")).await?;
                 return Ok(());
@@ -435,11 +469,11 @@ async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> 
                 let winnings = bet * 5;
                 let is_new_record = pay(&pool, user_id, winnings, biggest_win).await;
                 let mut text = t(&lang, "dice_win").replace("{winnings}", &winnings.to_string());
-                
+
                 if is_new_record {
                     text.push_str(&format!("\n\n{}", t(&lang, "achievement_unlocked")));
                 }
-                
+
                 bot.send_message(chat_id, text).parse_mode(ParseMode::Html).await?;
             } else {
                 let text = t(&lang, "dice_lose")
@@ -453,8 +487,7 @@ async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> 
             if !check_cooldown(&pool, user_id).await {
                 bot.send_message(chat_id, t(&lang, "cooldown_active")).await?;
                 return Ok(());
-            };
-            charge(&pool, user_id, bet).await;
+            }
 
             let bet = match resolve_bet(&pool, user_id, rest.first().copied(), default_bet).await {
                 Ok(b) => b,
@@ -481,8 +514,7 @@ async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> 
             if !check_cooldown(&pool, user_id).await {
                 bot.send_message(chat_id, t(&lang, "cooldown_active")).await?;
                 return Ok(());
-            };
-            charge(&pool, user_id, bet).await;
+            }
 
             let bet = match resolve_bet(&pool, user_id, rest.first().copied(), default_bet).await {
                 Ok(b) => b,
@@ -494,6 +526,15 @@ async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> 
             charge(&pool, user_id, bet).await;
             increment_games_played(&pool, user_id).await;
 
+            let mut deck = new_deck();
+            let hand: Vec<Card> = (0..5).map(|_| deck.pop().unwrap()).collect();
+            let holds = vec![false; 5];
+
+            save_poker(&pool, user_id, bet, &hand, &holds, &deck).await;
+
+            let text = poker_status(&lang, &hand, &holds, false);
+            let kb = poker_keyboard(&lang, &holds);
+            bot.send_message(chat_id, text).reply_markup(kb).parse_mode(ParseMode::Html).await?;
         }
 
         _ => {}

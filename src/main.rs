@@ -39,7 +39,6 @@ fn t(lang: &str, key: &str) -> String {
         .and_then(|m| m.get(key))
         .cloned()
         .unwrap_or_else(|| {
-            // Provide intelligent defaults for newly added features to prevent <Missing: key>
             match key {
                 "daily_success" => format!("✅ You claimed your daily reward of {} tokens!", DAILY_REWARD),
                 "daily_wait" => "⏳ You must wait {hours}h {mins}m before claiming your next daily bonus.".to_string(),
@@ -47,6 +46,9 @@ fn t(lang: &str, key: &str) -> String {
                 "bet_out_of_bounds" => format!("⚠️ Bet must be between {} and {} tokens.", MIN_BET, MAX_BET),
                 "achievement_unlocked" => "🌟 <b>ACHIEVEMENT UNLOCKED: New Personal Best!</b> 🌟\nCongratulations on your biggest win yet!".to_string(),
                 "top_title" => "🏆 <b>Top 10 Richest Players</b> 🏆".to_string(),
+                "flip_prompt" => "🪙 Choose your side to bet {bet} tokens:".to_string(),
+                "dice_prompt" => "🎲 Choose a number to bet {bet} tokens:".to_string(),
+                "wrong_user" => "⚠️ This is not your game!".to_string(),
                 _ => format!("<Missing: {}>", key),
             }
         })
@@ -395,46 +397,22 @@ async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> 
                 return Ok(());
             }
 
-            let choice = rest.first().map(|s| s.to_lowercase()).unwrap_or_default();
-            let bet_arg = rest.get(1).copied();
-
-            if choice != "heads" && choice != "tails" {
-                bot.send_message(chat_id, t(&lang, "flip_usage")).await?;
-                return Ok(());
-            }
-
-            let bet = match resolve_bet(&pool, user_id, bet_arg, default_bet).await {
+            let bet = match resolve_bet(&pool, user_id, rest.first().copied(), default_bet).await {
                 Ok(b) => b,
                 Err(err_key) => {
                     bot.send_message(chat_id, t(&lang, err_key)).await?;
                     return Ok(());
                 }
             };
-            charge(&pool, user_id, bet).await;
-            increment_games_played(&pool, user_id).await;
 
-            let heads = rand::rng().random_bool(0.5);
-            let won = (heads && choice == "heads") || (!heads && choice == "tails");
-            let winnings = if won { bet * 2 } else { 0 };
+            // Keyboard format: flip_<side>_<bet>_<user_id>
+            let kb = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("🦅 Heads", format!("flip_h_{}_{}", bet, user_id)),
+                InlineKeyboardButton::callback("🪙 Tails", format!("flip_t_{}_{}", bet, user_id)),
+            ]]);
 
-            let is_new_record = pay(&pool, user_id, winnings, biggest_win).await;
-
-            let side_str = t(&lang, if heads { "coin_heads" } else { "coin_tails" });
-            let mut text = if won {
-                t(&lang, "flip_win")
-                    .replace("{side}", &side_str)
-                    .replace("{winnings}", &winnings.to_string())
-            } else {
-                t(&lang, "flip_lose")
-                    .replace("{side}", &side_str)
-                    .replace("{bet}", &bet.to_string())
-            };
-
-            if is_new_record {
-                text.push_str(&format!("\n\n{}", t(&lang, "achievement_unlocked")));
-            }
-
-            bot.send_message(chat_id, text).parse_mode(ParseMode::Html).await?;
+            let text = t(&lang, "flip_prompt").replace("{bet}", &bet.to_string());
+            bot.send_message(chat_id, text).reply_markup(kb).await?;
         }
 
         "/dice" => {
@@ -443,44 +421,30 @@ async fn on_message(bot: Bot, msg: Message, pool: PgPool) -> ResponseResult<()> 
                 return Ok(());
             }
 
-            let guess: i32 = rest.first().and_then(|s| s.parse().ok()).unwrap_or(0);
-            let bet_arg = rest.get(1).copied();
-
-            if !(1..=6).contains(&guess) {
-                bot.send_message(chat_id, t(&lang, "dice_usage")).await?;
-                return Ok(());
-            }
-
-            let bet = match resolve_bet(&pool, user_id, bet_arg, default_bet).await {
+            let bet = match resolve_bet(&pool, user_id, rest.first().copied(), default_bet).await {
                 Ok(b) => b,
                 Err(err_key) => {
                     bot.send_message(chat_id, t(&lang, err_key)).await?;
                     return Ok(());
                 }
             };
-            charge(&pool, user_id, bet).await;
-            increment_games_played(&pool, user_id).await;
 
-            let dice = bot.send_dice(chat_id).emoji(DiceEmoji::Dice).await?;
-            let value = dice.dice().map(|d| d.value as i32).unwrap_or(0);
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            // Keyboard format: dice_<guess>_<bet>_<user_id>
+            let kb = InlineKeyboardMarkup::new(vec![
+                vec![
+                    InlineKeyboardButton::callback("⚀ 1", format!("dice_1_{}_{}", bet, user_id)),
+                    InlineKeyboardButton::callback("⚁ 2", format!("dice_2_{}_{}", bet, user_id)),
+                    InlineKeyboardButton::callback("⚂ 3", format!("dice_3_{}_{}", bet, user_id)),
+                ],
+                vec![
+                    InlineKeyboardButton::callback("⚃ 4", format!("dice_4_{}_{}", bet, user_id)),
+                    InlineKeyboardButton::callback("⚄ 5", format!("dice_5_{}_{}", bet, user_id)),
+                    InlineKeyboardButton::callback("⚅ 6", format!("dice_6_{}_{}", bet, user_id)),
+                ]
+            ]);
 
-            if value == guess {
-                let winnings = bet * 5;
-                let is_new_record = pay(&pool, user_id, winnings, biggest_win).await;
-                let mut text = t(&lang, "dice_win").replace("{winnings}", &winnings.to_string());
-
-                if is_new_record {
-                    text.push_str(&format!("\n\n{}", t(&lang, "achievement_unlocked")));
-                }
-
-                bot.send_message(chat_id, text).parse_mode(ParseMode::Html).await?;
-            } else {
-                let text = t(&lang, "dice_lose")
-                    .replace("{value}", &value.to_string())
-                    .replace("{bet}", &bet.to_string());
-                bot.send_message(chat_id, text).parse_mode(ParseMode::Html).await?;
-            }
+            let text = t(&lang, "dice_prompt").replace("{bet}", &bet.to_string());
+            bot.send_message(chat_id, text).reply_markup(kb).await?;
         }
 
         "/blackjack" => {
@@ -550,7 +514,7 @@ async fn on_callback(bot: Bot, q: CallbackQuery, pool: PgPool) -> ResponseResult
     let data = q.data.clone().unwrap_or_default();
 
     let Some(msg_ref) = q.message.as_ref() else {
-        bot.answer_callback_query(q.id).await?;
+        bot.answer_callback_query(&q.id).await?;
         return Ok(());
     };
     let (chat_id, message_id) = chat_and_message_id(msg_ref);
@@ -563,19 +527,14 @@ async fn on_callback(bot: Bot, q: CallbackQuery, pool: PgPool) -> ResponseResult
         handle_blackjack(&bot, &pool, &lang, user_id, chat_id, message_id, action, biggest_win).await?;
     } else if let Some(action) = data.strip_prefix("p_") {
         handle_poker(&bot, &pool, &lang, user_id, chat_id, message_id, action, biggest_win).await?;
+    } else if let Some(action) = data.strip_prefix("flip_") {
+        handle_flip(&bot, &pool, &lang, user_id, chat_id, message_id, action, biggest_win, &q.id).await?;
+    } else if let Some(action) = data.strip_prefix("dice_") {
+        handle_dice(&bot, &pool, &lang, user_id, chat_id, message_id, action, biggest_win, &q.id).await?;
     }
 
-    bot.answer_callback_query(q.id).await?;
+    let _ = bot.answer_callback_query(&q.id).await;
     Ok(())
-}
-
-/// MaybeInaccessibleMessage wraps either a full Message or a stub —
-/// pull out chat_id/message_id from whichever variant we got.
-fn chat_and_message_id(msg: &MaybeInaccessibleMessage) -> (ChatId, MessageId) {
-    match msg {
-        MaybeInaccessibleMessage::Regular(m) => (m.chat.id, m.id),
-        MaybeInaccessibleMessage::Inaccessible(m) => (m.chat.id, m.message_id),
-    }
 }
 
 async fn handle_blackjack(
@@ -738,6 +697,122 @@ async fn handle_poker(
         bot.edit_message_text(chat_id, message_id, text).parse_mode(ParseMode::Html).await?;
     }
 
+    Ok(())
+}
+
+async fn handle_flip(
+    bot: &Bot,
+    pool: &PgPool,
+    lang: &str,
+    user_id: i64,
+    chat_id: ChatId,
+    message_id: MessageId,
+    action: &str,
+    biggest_win: i32,
+    callback_id: &str,
+) -> ResponseResult<()> {
+    let parts: Vec<&str> = action.split('_').collect();
+    if parts.len() != 3 { return Ok(()); }
+    
+    let choice = parts[0];
+    let bet: i32 = parts[1].parse().unwrap_or(0);
+    let expected_user: i64 = parts[2].parse().unwrap_or(0);
+
+    if user_id != expected_user {
+        bot.answer_callback_query(callback_id).text(t(lang, "wrong_user")).show_alert(true).await?;
+        return Ok(());
+    }
+
+    let player_data = stats(pool, user_id).await.unwrap_or_default();
+    if bet > player_data.tokens {
+        bot.edit_message_text(chat_id, message_id, t(lang, "invalid_bet")).await?;
+        return Ok(());
+    }
+
+    charge(pool, user_id, bet).await;
+    increment_games_played(pool, user_id).await;
+
+    let heads = rand::rng().random_bool(0.5);
+    let won = (heads && choice == "h") || (!heads && choice == "t");
+    let winnings = if won { bet * 2 } else { 0 };
+
+    let is_new_record = pay(pool, user_id, winnings, biggest_win).await;
+
+    let side_str = t(lang, if heads { "coin_heads" } else { "coin_tails" });
+    let mut text = if won {
+        t(lang, "flip_win")
+            .replace("{side}", &side_str)
+            .replace("{winnings}", &winnings.to_string())
+    } else {
+        t(lang, "flip_lose")
+            .replace("{side}", &side_str)
+            .replace("{bet}", &bet.to_string())
+    };
+
+    if is_new_record {
+        text.push_str(&format!("\n\n{}", t(lang, "achievement_unlocked")));
+    }
+
+    bot.edit_message_text(chat_id, message_id, text).parse_mode(ParseMode::Html).await?;
+    Ok(())
+}
+
+async fn handle_dice(
+    bot: &Bot,
+    pool: &PgPool,
+    lang: &str,
+    user_id: i64,
+    chat_id: ChatId,
+    message_id: MessageId,
+    action: &str,
+    biggest_win: i32,
+    callback_id: &str,
+) -> ResponseResult<()> {
+    let parts: Vec<&str> = action.split('_').collect();
+    if parts.len() != 3 { return Ok(()); }
+    
+    let guess: i32 = parts[0].parse().unwrap_or(0);
+    let bet: i32 = parts[1].parse().unwrap_or(0);
+    let expected_user: i64 = parts[2].parse().unwrap_or(0);
+
+    if user_id != expected_user {
+        bot.answer_callback_query(callback_id).text(t(lang, "wrong_user")).show_alert(true).await?;
+        return Ok(());
+    }
+
+    let player_data = stats(pool, user_id).await.unwrap_or_default();
+    if bet > player_data.tokens {
+        bot.edit_message_text(chat_id, message_id, t(lang, "invalid_bet")).await?;
+        return Ok(());
+    }
+
+    charge(pool, user_id, bet).await;
+    increment_games_played(pool, user_id).await;
+
+    bot.edit_message_text(chat_id, message_id, "🎲 Rolling...").await?;
+
+    let dice = bot.send_dice(chat_id).emoji(DiceEmoji::Dice).await?;
+    let value = dice.dice().map(|d| d.value as i32).unwrap_or(0);
+    
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    if value == guess {
+        let winnings = bet * 5;
+        let is_new_record = pay(pool, user_id, winnings, biggest_win).await;
+        let mut text = t(lang, "dice_win").replace("{winnings}", &winnings.to_string());
+
+        if is_new_record {
+            text.push_str(&format!("\n\n{}", t(lang, "achievement_unlocked")));
+        }
+
+        bot.send_message(chat_id, text).parse_mode(ParseMode::Html).await?;
+    } else {
+        let text = t(lang, "dice_lose")
+            .replace("{value}", &value.to_string())
+            .replace("{bet}", &bet.to_string());
+        bot.send_message(chat_id, text).parse_mode(ParseMode::Html).await?;
+    }
+    
     Ok(())
 }
 
@@ -924,7 +999,6 @@ fn poker_rank_key(hand: &[Card]) -> &'static str {
 
 // ---------- Player/DB helpers ----------
 
-// Struct containing expanded user metrics
 #[derive(Default)]
 struct PlayerStats {
     tokens: i32,
@@ -968,7 +1042,6 @@ async fn stats(pool: &PgPool, user_id: i64) -> Result<PlayerStats, sqlx::Error> 
     })
 }
 
-// ADDITION: Verify rate-limits/cooldown
 async fn check_cooldown(pool: &PgPool, user_id: i64) -> bool {
     let now = Utc::now();
     let row = sqlx::query("SELECT last_action FROM players WHERE user_id = $1")
@@ -985,7 +1058,6 @@ async fn check_cooldown(pool: &PgPool, user_id: i64) -> bool {
         }
     }
 
-    // Update last action time to enforce the cooldown
     sqlx::query("UPDATE players SET last_action = $1 WHERE user_id = $2")
         .bind(now)
         .bind(user_id)
@@ -996,7 +1068,6 @@ async fn check_cooldown(pool: &PgPool, user_id: i64) -> bool {
     true
 }
 
-// ADDITION: Games played tracker
 async fn increment_games_played(pool: &PgPool, user_id: i64) {
     sqlx::query("UPDATE players SET games_played = games_played + 1 WHERE user_id = $1")
         .bind(user_id)
@@ -1015,7 +1086,6 @@ async fn resolve_bet(pool: &PgPool, user_id: i64, arg: Option<&str>, default_bet
         return Err("missing_bet");
     }
     
-    // Limits Enforcement
     if bet < MIN_BET || bet > MAX_BET {
         return Err("bet_out_of_bounds");
     }
@@ -1037,8 +1107,6 @@ async fn charge(pool: &PgPool, user_id: i64, amount: i32) {
         .ok();
 }
 
-// FIX/ADDITION: Modified pay logic to manage the achievements tracking natively 
-// Returns a boolean indicating if a new personal record ("biggest win") was hit.
 async fn pay(pool: &PgPool, user_id: i64, amount: i32, current_biggest_win: i32) -> bool {
     if amount == 0 {
         return false;
